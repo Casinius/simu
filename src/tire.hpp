@@ -103,25 +103,24 @@ public:
               mz0 * m_params.Dz * m_normal_load};
     }
 
-    // 归一化方向因子
-    double sr_norm = sr / total_slip;
-    double sa_norm = std::tan(sa) / total_slip;
+    // 纯工况下的力（带正确符号）
+    double Fx_pure = fx0 * Dx_scaled;
+    double Fy_pure = fy0 * Dy_scaled;
 
-    // 组合滑移下的力减小因子 G (经验公式)
-    // 这里使用一种光滑函数： G = cos( (π/2) * (total_slip / peak_slip) ) 但
-    // peak_slip 与载荷有关 简化：使用 G = exp(-k * total_slip^2)
-    // 类型，保证连续且不突变
-    const double k = 3.0; // 衰减系数，可调
-    double G = std::exp(-k * total_slip * total_slip);
+    // 不用指数衰减 太容易打滑
+    // const double k = 3.0; // 衰减系数，可调
+    // double G = std::exp(-k * total_slip * total_slip);
 
-    // 最终力 = 纯滑移力 * 方向因子 * G (并确保合成力不超过摩擦椭圆)
-    double Fx = fx0 * Dx_scaled * sr_norm * G;
-    double Fy = fy0 * Dy_scaled * sa_norm * G;
+    double G = std::max(0.1, 1.0 - 0.5 * total_slip); // 或更标准的模型
 
-    // 额外摩擦椭圆限制 (可选，保证合力不超过 mu*Fz)
+    // 先衰减
+    double Fx = Fx_pure * G;
+    double Fy = Fy_pure * G;
+
+    // 再摩擦椭圆限制（保持符号）
     double max_force = mu_factor * m_normal_load;
     double F_comb = std::sqrt(Fx * Fx + Fy * Fy);
-    if (F_comb > max_force && max_force > 0.0) {
+    if (F_comb > max_force && F_comb > 0.0) {
       double scale = max_force / F_comb;
       Fx *= scale;
       Fy *= scale;
@@ -135,6 +134,8 @@ public:
 
   // 直接获取当前已计算的值（由外部更新状态后调用 compute 获取）
   // 也可将 compute 拆分为 update 和 get 函数
+  auto get_params() const { return m_params; }
+  void set_params(PacejkaParameters &&params) { m_params = params; }
 
 private:
   PacejkaParameters m_params;
