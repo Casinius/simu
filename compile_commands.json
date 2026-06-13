@@ -1,0 +1,16 @@
+[
+{
+  "directory": "/home/cyan/Godot-Advanced-Vehicle-main/simu_gd/simu_gd",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/u/units/v2.3.4/0d7dbffdf3344715bc6427e60ca24e0c/include", "-I", "/home/cyan/.xmake/packages/f/fpm/2024.09.06/23ec648340db45bbaf6b313d74d0d3b5/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu_gd/linux/x86_64/release/src/main.cpp.o", "src/main.cpp"],
+  "file": "src/main.cpp"
+},
+{
+  "directory": "/home/cyan/Godot-Advanced-Vehicle-main/simu_gd/simu_gd",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/u/units/v2.3.4/0d7dbffdf3344715bc6427e60ca24e0c/include", "-I", "/home/cyan/.xmake/packages/f/fpm/2024.09.06/23ec648340db45bbaf6b313d74d0d3b5/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu_gd/linux/x86_64/release/src/veh.cxx.o", "src/veh.cxx"],
+  "file": "src/veh.cxx"
+},
+{
+  "directory": "/home/cyan/Godot-Advanced-Vehicle-main/simu_gd/simu_gd",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/u/units/v2.3.4/0d7dbffdf3344715bc6427e60ca24e0c/include", "-I", "/home/cyan/.xmake/packages/f/fpm/2024.09.06/23ec648340db45bbaf6b313d74d0d3b5/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu_gd/linux/x86_64/release/src/solve.cxx.o", "src/solve.cxx"],
+  "file": "src/solve.cxx"
+}]

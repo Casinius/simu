@@ -1,0 +1,1191 @@
+// ============================================================================
+// vehicle_core.h - 车辆动力学核心框架
+// Eigen 5.0.0 + C++20 + 强类型单位系统
+// ============================================================================
+#pragma once
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <array>
+#include <cmath>
+#include <functional>
+#include <memory>
+#include <numbers>
+#include <optional>
+#include <variant>
+
+#include "unit.h"  // 你的单位系统
+
+namespace vdyn {
+
+// ============================================================================
+// Eigen 5.0 类型别名 - 使用固定大小矩阵以获得最佳性能
+// ============================================================================
+template <typename T, int Rows, int Cols>
+using Matrix = Eigen::Matrix<T, Rows, Cols>;
+
+template <typename T, int Size>
+using Vector = Eigen::Matrix<T, Size, 1>;
+
+using Vec3 = Vector<double, 3>;
+using Vec4 = Vector<double, 4>;
+using Mat3 = Matrix<double, 3, 3>;
+using Mat4 = Matrix<double, 4, 4>;
+
+// ============================================================================
+// 坐标系定义 (ISO 8855)
+// ============================================================================
+struct Frame {
+    Vec3 position;          // 位置 [m]
+    Eigen::Quaterniond orientation;  // 姿态
+    Vec3 velocity;          // 线速度 [m/s]
+    Vec3 angular_velocity;  // 角速度 [rad/s]
+};
+
+// ============================================================================
+// 1. 轮胎模型 - Pacejka Magic Formula 6.2
+// ============================================================================
+class PacejkaMF62 {
+public:
+    // MF 6.2 系数结构 (基于 TNO Delft-Tyre 标准)
+    struct Coefficients {
+        // 纵向力 (Fx) - 约20个系数
+        double PCX1 = 1.65;   // 纵向曲率因子
+        double PDX1 = 1.0;    // 纵向峰值因子
+        double PDX2 = 0.0;    // 载荷依赖的峰值因子
+        double PDX3 = 0.0;    // 外倾角对峰值因子影响
+        double PEX1 = 0.0;    // 纵向曲率
+        double PEX2 = 0.0;    // 载荷依赖曲率
+        double PEX3 = 0.0;    // 外倾角依赖曲率
+        double PEX4 = 0.0;    // 曲率因子
+        double PKX1 = 20.0;   // 纵向滑移刚度
+        double PKX2 = 0.0;    // 载荷依赖滑移刚度
+        double PKX3 = 0.0;    // 外倾角对滑移刚度影响
+        double PHX1 = 0.0;    // 水平偏移
+        double PHX2 = 0.0;    // 载荷依赖水平偏移
+        double PVX1 = 0.0;    // 垂直偏移
+        double PVX2 = 0.0;    // 载荷依赖垂直偏移
+        double PPX1 = 0.0;    // 压力效应
+        double PPX2 = 0.0;
+        double PPX3 = 0.0;
+        double PPX4 = 0.0;
+        
+        // 侧向力 (Fy) - 约25个系数
+        double PCY1 = 1.30;   // 侧向曲率因子
+        double PDY1 = 1.0;    // 侧向峰值因子
+        double PDY2 = 0.0;    // 载荷依赖
+        double PDY3 = 0.0;    // 外倾角影响
+        double PEY1 = 0.0;    // 侧向曲率
+        double PEY2 = 0.0;    // 载荷依赖
+        double PEY3 = 0.0;    // 外倾角依赖
+        double PEY4 = 0.0;    // 曲率因子
+        double PEY5 = 0.0;    // 曲率偏移
+        double PKY1 = 15.0;   // 侧偏刚度
+        double PKY2 = 0.0;    // 载荷依赖
+        double PKY3 = 0.0;    // 外倾角对刚度影响
+        double PKY4 = 0.0;    // 曲率对刚度影响
+        double PKY5 = 0.0;    // 曲率对刚度影响2
+        double PKY6 = 0.0;    // 外倾角刚度
+        double PKY7 = 0.0;    // 外倾角刚度载荷依赖
+        double PHY1 = 0.0;    // 水平偏移
+        double PHY2 = 0.0;    // 载荷依赖
+        double PHY3 = 0.0;    // 外倾角偏移
+        double PVY1 = 0.0;    // 垂直偏移
+        double PVY2 = 0.0;    // 载荷依赖
+        double PVY3 = 0.0;    // 外倾角垂直偏移
+        double PVY4 = 0.0;    // 外倾角垂直偏移2
+        double PPY1 = 0.0;    // 压力效应
+        double PPY2 = 0.0;
+        double PPY3 = 0.0;
+        double PPY4 = 0.0;
+        double PPY5 = 0.0;
+        
+        // 回正力矩 (Mz) - 约20个系数
+        double PCZ1 = 1.8;    // 回正力矩曲率
+        double PDZ1 = 1.0;    // 峰值因子
+        double PDZ2 = 0.0;    // 载荷依赖
+        double PDZ3 = 0.0;    // 外倾角影响
+        double PDZ4 = 0.0;    // 外倾角影响2
+        double PEZ1 = 0.0;    // 曲率
+        double PEZ2 = 0.0;    // 载荷依赖
+        double PEZ3 = 0.0;    // 外倾角依赖
+        double PEZ4 = 0.0;    // 曲率因子
+        double PKZ1 = 10.0;   // 回正刚度
+        double PKZ2 = 0.0;    // 载荷依赖
+        double PKZ3 = 0.0;    // 外倾角对刚度影响
+        double PKZ4 = 0.0;    // 滑移对刚度影响
+        double PHZ1 = 0.0;    // 水平偏移
+        double PHZ2 = 0.0;    // 载荷依赖
+        double PHZ3 = 0.0;    // 外倾角偏移
+        double PHZ4 = 0.0;    // 滑移偏移
+        double PVZ1 = 0.0;    // 垂直偏移
+        double PVZ2 = 0.0;    // 载荷依赖
+        double PVZ3 = 0.0;    // 外倾角垂直偏移
+        double PVZ4 = 0.0;    // 滑移垂直偏移
+        double PPZ1 = 0.0;    // 压力效应
+        double PPZ2 = 0.0;
+        
+        // 翻转力矩 (Mx) - 约5个系数
+        double PQX1 = 0.0;    // 翻转力矩因子
+        double PQX2 = 0.0;    // 载荷依赖
+        double PQX3 = 0.0;    // 外倾角影响
+        double PMX1 = 0.0;    // 翻转力矩量级
+        
+        // 俯仰力矩 (My) - 约5个系数
+        double PQY1 = 0.0;    // 滚动阻力因子
+        double PQY2 = 0.0;    // 载荷依赖
+        double PQY3 = 0.0;    // 外倾角影响
+        double PQY4 = 0.0;    // 滑移影响
+        double PQY5 = 0.0;    // 滑移影响2
+        double PMY1 = 0.0;    // 俯仰力矩量级
+        double PMY2 = 0.0;    // 载荷依赖
+        double PMY3 = 0.0;    // 滑移影响
+        double PMY4 = 0.0;    // 滑移影响2
+        
+        // 组合滑移 - 约10个系数
+        double RBX1 = 10.0;   // 纵向组合滑移因子
+        double RBX2 = 0.0;    // 载荷依赖
+        double RBX3 = 0.0;    // 外倾角影响
+        double RCX1 = 1.0;    // 纵向组合曲率
+        double REX1 = 0.0;    // 纵向组合曲率
+        double REX2 = 0.0;    // 载荷依赖
+        double RHX1 = 0.0;    // 纵向组合水平偏移
+        double RBY1 = 10.0;   // 侧向组合滑移因子
+        double RBY2 = 0.0;    // 载荷依赖
+        double RBY3 = 0.0;    // 外倾角影响
+        double RCY1 = 1.0;    // 侧向组合曲率
+        double REY1 = 0.0;    // 侧向组合曲率
+        double REY2 = 0.0;    // 载荷依赖
+        double RHY1 = 0.0;    // 侧向组合水平偏移
+        double RVY1 = 0.0;    // 侧向组合垂直偏移
+        double RVY2 = 0.0;    // 载荷依赖
+        double RVY3 = 0.0;    // 外倾角影响
+        double RVY4 = 0.0;    // 滑移影响
+        double RVY5 = 0.0;    // 滑移影响2
+        double RVY6 = 0.0;    // 滑移影响3
+        
+        // 转向滑移 (MF 6.2 新增) - 约15个系数
+        double PTX1 = 0.0;    // 转向滑移纵向因子
+        double PTX2 = 0.0;    // 载荷依赖
+        double PTX3 = 0.0;    // 外倾角影响
+        double PTX4 = 0.0;    // 滑移影响
+        double PTX5 = 0.0;    // 滑移影响2
+        double PTX6 = 0.0;    // 滑移影响3
+        double PTY1 = 0.0;    // 转向滑移侧向因子
+        double PTY2 = 0.0;    // 载荷依赖
+        double PTY3 = 0.0;    // 外倾角影响
+        double PTY4 = 0.0;    // 滑移影响
+        double PTY5 = 0.0;    // 滑移影响2
+        double PTY6 = 0.0;    // 滑移影响3
+        double PTY7 = 0.0;    // 滑移影响4
+        double PTY8 = 0.0;    // 滑移影响5
+        double PTY9 = 0.0;    // 滑移影响6
+        
+        // 参考条件
+        double FNOMIN = 3000.0;   // 标称载荷 [N]
+        double PUNOMIN = 220000.0; // 标称胎压 [Pa]
+        double LONGVL = 16.67;    // 标称速度 [m/s] (60 km/h)
+        double NOMPRES = 220000.0; // 标称压力 [Pa]
+    };
+
+    struct Inputs {
+        LinearForce_Unit Fz;           // 垂直载荷
+        double kappa;                    // 纵向滑移率 (-1 ~ 1)
+        double alpha;                    // 侧偏角 [rad]
+        double gamma;                    // 外倾角 [rad]
+        double phi_t;                    // 转向滑移角 [rad] (MF 6.2)
+        Speed_Unit Vx;                   // 纵向速度
+        double pressure;                 // 胎压 [Pa]
+        Speed_Unit omega;                // 轮胎角速度 [rad/s]
+    };
+
+    struct Outputs {
+        LinearForce_Unit Fx;             // 纵向力
+        LinearForce_Unit Fy;             // 侧向力
+        Torque_Unit Mz;                  // 回正力矩
+        Torque_Unit Mx;                  // 翻转力矩
+        Torque_Unit My;                  // 俯仰力矩 (滚动阻力)
+        double mu_x;                     // 纵向摩擦系数
+        double mu_y;                     // 侧向摩擦系数
+    };
+
+    explicit PacejkaMF62(const Coefficients& coeffs) : coeffs_(coeffs) {}
+
+    Outputs Compute(const Inputs& in) const {
+        Outputs out;
+        
+        // 载荷归一化
+        double dfz = (in.Fz.to<double>() - coeffs_.FNOMIN) / coeffs_.FNOMIN;
+        double fz_nom = in.Fz.to<double>() / coeffs_.FNOMIN;
+        
+        // 胎压归一化
+        double dpi = (in.pressure - coeffs_.PUNOMIN) / coeffs_.PUNOMIN;
+        
+        // 速度效应
+        double sv = in.Vx.to<double>() / coeffs_.LONGVL;
+        
+        // === 纵向力 Fx ===
+        double SHx = (coeffs_.PHX1 + coeffs_.PHX2 * dfz) * 
+                     (1 + coeffs_.PPX3 * dpi + coeffs_.PPX4 * dpi * dpi);
+        double SVx = in.Fz.to<double>() * (coeffs_.PVX1 + coeffs_.PVX2 * dfz) *
+                     (1 + coeffs_.PPX1 * dpi + coeffs_.PPX2 * dpi * dpi);
+        double Kx = in.Fz.to<double>() * (coeffs_.PKX1 + coeffs_.PKX2 * dfz) *
+                    exp(coeffs_.PKX3 * dfz) *
+                    (1 + coeffs_.PPX1 * dpi + coeffs_.PPX2 * dpi * dpi);
+        double Bx = Kx / (coeffs_.PCX1 * (coeffs_.PDX1 + coeffs_.PDX2 * dfz) *
+                    (1 + coeffs_.PDX3 * std::sin(in.gamma)) *
+                    (1 + coeffs_.PPX3 * dpi + coeffs_.PPX4 * dpi * dpi));
+        double Cx = coeffs_.PCX1;
+        double Dx = (coeffs_.PDX1 + coeffs_.PDX2 * dfz) * 
+                    (1 + coeffs_.PDX3 * std::sin(in.gamma)) *
+                    (1 + coeffs_.PPX3 * dpi + coeffs_.PPX4 * dpi * dpi) *
+                    in.Fz.to<double>();
+        double Ex = (coeffs_.PEX1 + coeffs_.PEX2 * dfz + coeffs_.PEX3 * dfz * dfz) *
+                    (1 - coeffs_.PEX4 * std::signbit(in.kappa + SHx)) *
+                    (1 + coeffs_.PPX1 * dpi + coeffs_.PPX2 * dpi * dpi);
+        
+        double kappa_x = in.kappa + SHx;
+        double Fx0 = Dx * std::sin(Cx * std::atan(Bx * kappa_x - Ex * (Bx * kappa_x - std::atan(Bx * kappa_x)))) + SVx;
+        
+        // === 侧向力 Fy ===
+        double SHy = (coeffs_.PHY1 + coeffs_.PHY2 * dfz) *
+                     (1 + coeffs_.PPY3 * dpi + coeffs_.PPY4 * dpi * dpi) +
+                     coeffs_.PHY3 * in.gamma;
+        double SVy = in.Fz.to<double>() * (coeffs_.PVY1 + coeffs_.PVY2 * dfz) *
+                     (1 + coeffs_.PPY1 * dpi + coeffs_.PPY2 * dpi * dpi) +
+                     (coeffs_.PVY3 + coeffs_.PVY4 * dfz) * in.gamma;
+        double Ky = (coeffs_.PKY1 + coeffs_.PKY2 * dfz) *
+                      exp(coeffs_.PKY3 * dfz) *
+                      (1 + coeffs_.PPY1 * dpi + coeffs_.PPY2 * dpi * dpi) *
+                      in.Fz.to<double>();
+        double By = Ky / (coeffs_.PCY1 * (coeffs_.PDY1 + coeffs_.PDY2 * dfz) *
+                    (1 + coeffs_.PDY3 * std::sin(in.gamma) * std::sin(in.gamma)) *
+                    (1 + coeffs_.PPY3 * dpi + coeffs_.PPY4 * dpi * dpi));
+        double Cy = coeffs_.PCY1;
+        double Dy = (coeffs_.PDY1 + coeffs_.PDY2 * dfz) *
+                    (1 + coeffs_.PDY3 * std::sin(in.gamma) * std::sin(in.gamma)) *
+                    (1 + coeffs_.PPY3 * dpi + coeffs_.PPY4 * dpi * dpi) *
+                    in.Fz.to<double>();
+        double Ey = (coeffs_.PEY1 + coeffs_.PEY2 * dfz + coeffs_.PEY3 * dfz * dfz) *
+                    (1 - coeffs_.PEY4 * std::signbit(in.alpha + SHy)) *
+                    (1 + coeffs_.PPY1 * dpi + coeffs_.PPY2 * dpi * dpi);
+        
+        double alpha_y = in.alpha + SHy;
+        double Fy0 = Dy * std::sin(Cy * std::atan(By * alpha_y - Ey * (By * alpha_y - std::atan(By * alpha_y)))) + SVy;
+        
+        // === 回正力矩 Mz ===
+        // (简化版，完整版包含气动拖距和残余力矩)
+        double SHt = coeffs_.PHZ1 + coeffs_.PHZ2 * dfz +
+                     (coeffs_.PHZ3 + coeffs_.PHZ4 * dfz) * in.gamma;
+        double alpha_t = in.alpha + SHt;
+        double Bt = (coeffs_.PKZ1 + coeffs_.PKZ2 * dfz) *
+                    (1 + coeffs_.PKZ3 * std::abs(in.gamma)) *
+                    (1 + coeffs_.PPZ1 * dpi + coeffs_.PPZ2 * dpi * dpi);
+        double Ct = coeffs_.PCZ1;
+        double Dt = (coeffs_.PDZ1 + coeffs_.PDZ2 * dfz) *
+                    (1 + coeffs_.PDZ3 * std::sin(in.gamma) + coeffs_.PDZ4 * std::sin(in.gamma) * std::sin(in.gamma)) *
+                    in.Fz.to<double>() * coeffs_.FNOMIN;
+        double Et = (coeffs_.PEZ1 + coeffs_.PEZ2 * dfz + coeffs_.PEZ3 * dfz * dfz) *
+                    (1 + coeffs_.PEZ4 * std::atan(Bt * Ct * alpha_t));
+        
+        double Mz0 = Dt * std::cos(Ct * std::atan(Bt * alpha_t - Et * (Bt * alpha_t - std::atan(Bt * alpha_t)))) *
+                     std::cos(in.alpha);
+        
+        // === 组合滑移 (Combined Slip) - MF 6.2 方法 ===
+        double Gx = std::cos(Cx * std::atan(Bx * SHx - Ex * (Bx * SHx - std::atan(Bx * SHx)))) / 
+                    std::cos(Cx * std::atan(Bx * (SHx + coeffs_.RBX1) - Ex * (Bx * (SHx + coeffs_.RBX1) - std::atan(Bx * (SHx + coeffs_.RBX1)))));
+        double Gy = std::cos(Cy * std::atan(By * SHy - Ey * (By * SHy - std::atan(By * SHy)))) /
+                    std::cos(Cy * std::atan(By * (SHy + coeffs_.RBY1) - Ey * (By * (SHy + coeffs_.RBY1) - std::atan(By * (SHy + coeffs_.RBY1)))));
+        
+        double Fx_combined = Fx0 * Gx;
+        double Fy_combined = Fy0 * Gy;
+        
+        // 转向滑移修正 (MF 6.2)
+        double phi_t_effect = 1.0 - coeffs_.PTX1 * std::abs(in.phi_t) - coeffs_.PTY1 * in.phi_t * in.phi_t;
+        Fx_combined *= phi_t_effect;
+        Fy_combined *= phi_t_effect;
+        
+        // === 输出 ===
+        out.Fx = LinearForce_Unit(Fx_combined);
+        out.Fy = LinearForce_Unit(Fy_combined);
+        out.Mz = Torque_Unit(Mz0);
+        out.Mx = Torque_Unit(in.Fz.to<double>() * coeffs_.PMX1 * in.gamma);
+        out.My = Torque_Unit(in.Fz.to<double>() * (coeffs_.PQY1 + coeffs_.PQY2 * dfz) * in.kappa);
+        out.mu_x = Fx_combined / in.Fz.to<double>();
+        out.mu_y = Fy_combined / in.Fz.to<double>();
+        
+        return out;
+    }
+
+    // 松弛长度模型 (Transient behavior)
+    struct TransientState {
+        double u;       // 纵向松弛位移
+        double v;       // 侧向松弛位移
+        double phi;     // 转向松弛角
+    };
+    
+    TransientState UpdateTransient(const TransientState& prev, const Inputs& in, 
+                                    Time_Unit dt, double sigma_kappa, double sigma_alpha) const {
+        TransientState next;
+        double vx = std::abs(in.Vx.to<double>());
+        double eps = 1e-6;
+        
+        // 松弛长度微分方程
+        next.u = prev.u + dt.to<double>() * (-vx * prev.u / (sigma_kappa + eps) + in.kappa);
+        next.v = prev.v + dt.to<double>() * (-vx * prev.v / (sigma_alpha + eps) + in.alpha);
+        next.phi = prev.phi + dt.to<double>() * (-vx * prev.phi / (sigma_alpha + eps) + in.phi_t);
+        
+        return next;
+    }
+
+private:
+    Coefficients coeffs_;
+};
+
+// ============================================================================
+// 2. 差速器模型 - 支持 Open / LSD / Locked
+// ============================================================================
+enum class DiffType { Open, ViscousLSD, ClutchLSD, Torsen, Locked };
+
+class Differential {
+public:
+    struct Config {
+        DiffType type = DiffType::Open;
+        double ratio = 3.5;                    // 主减速比
+        double bias_ratio = 1.0;               // 扭矩偏置比 (LSD)
+        double preload = 0.0;                  // 预载扭矩 [Nm]
+        double viscous_coeff = 0.0;            // 粘性耦合系数 [Nm/(rad/s)]
+        double locking_coeff = 0.0;            // 锁止系数 (0-1)
+        double max_locking_torque = 0.0;       // 最大锁止扭矩 [Nm]
+    };
+
+    explicit Differential(const Config& cfg) : config_(cfg) {}
+
+    // 计算左右轮扭矩分配
+    // 输入: 输入轴扭矩, 左轮速, 右轮速
+    // 输出: 左轮扭矩, 右轮扭矩
+    std::pair<Torque_Unit, Torque_Unit> Compute(
+        Torque_Unit input_torque,
+        RSpeed_Unit left_speed,
+        RSpeed_Unit right_speed) const {
+        
+        double T_in = input_torque.to<double>();
+        double wL = left_speed.to<double>();
+        double wR = right_speed.to<double>();
+        double dw = wL - wR;  // 差速
+        
+        double T_L = 0.0, T_R = 0.0;
+        
+        switch (config_.type) {
+            case DiffType::Open: {
+                // 开式差速器: 扭矩均分
+                T_L = T_in * 0.5;
+                T_R = T_in * 0.5;
+                break;
+            }
+            
+            case DiffType::ViscousLSD: {
+                // 粘性限滑差速器
+                double T_viscous = config_.viscous_coeff * dw;
+                double T_base = T_in * 0.5;
+                T_L = T_base + T_viscous;
+                T_R = T_base - T_viscous;
+                break;
+            }
+            
+            case DiffType::ClutchLSD: {
+                // 离合器式限滑差速器
+                // 基于你的离合器问题经验，使用能量耗散模型
+                double T_diff = std::abs(dw);
+                double T_lock = std::min(config_.max_locking_torque, 
+                                        config_.locking_coeff * T_diff);
+                double T_base = T_in * 0.5;
+                double sign = (dw > 0) ? 1.0 : -1.0;
+                
+                T_L = T_base + sign * T_lock * 0.5;
+                T_R = T_base - sign * T_lock * 0.5;
+                break;
+            }
+            
+            case DiffType::Torsen: {
+                // 托森差速器 (扭矩感应)
+                double bias = config_.bias_ratio;
+                if (std::abs(dw) < 1e-6) {
+                    T_L = T_in * 0.5;
+                    T_R = T_in * 0.5;
+                } else {
+                    double w_sum = std::abs(wL) + std::abs(wR);
+                    double T_max = T_in * bias / (1.0 + bias);
+                    double T_min = T_in / (1.0 + bias);
+                    
+                    if (wL > wR) {
+                        T_L = T_min;
+                        T_R = T_max;
+                    } else {
+                        T_L = T_max;
+                        T_R = T_min;
+                    }
+                }
+                break;
+            }
+            
+            case DiffType::Locked: {
+                // 差速锁: 强制同步
+                // 平均分配，但限制差速
+                T_L = T_in * 0.5;
+                T_R = T_in * 0.5;
+                // 额外的锁止扭矩通过外部约束处理
+                break;
+            }
+        }
+        
+        // 确保扭矩守恒 (考虑损耗)
+        double T_total = T_L + T_R;
+        if (std::abs(T_total) > 1e-9) {
+            double scale = T_in / T_total;
+            T_L *= scale;
+            T_R *= scale;
+        }
+        
+        return {Torque_Unit(T_L), Torque_Unit(T_R)};
+    }
+
+    double GetRatio() const { return config_.ratio; }
+
+private:
+    Config config_;
+};
+
+// ============================================================================
+// 3. 引擎模型 - 含能量耗散型离合器
+// ============================================================================
+class Engine {
+public:
+    struct TorqueCurve {
+        std::vector<std::pair<RSpeed_Unit, Torque_Unit>> points;
+        
+        Torque_Unit Interpolate(RSpeed_Unit rpm) const {
+            double r = rpm.to<double>();
+            if (points.empty()) return Torque_Unit(0.0);
+            if (r <= points.front().first.to<double>()) return points.front().second;
+            if (r >= points.back().first.to<double>()) return points.back().second;
+            
+            for (size_t i = 0; i < points.size() - 1; ++i) {
+                double r1 = points[i].first.to<double>();
+                double r2 = points[i+1].first.to<double>();
+                if (r >= r1 && r <= r2) {
+                    double t = (r - r1) / (r2 - r1);
+                    double t1 = points[i].second.to<double>();
+                    double t2 = points[i+1].second.to<double>();
+                    return Torque_Unit(t1 + t * (t2 - t1));
+                }
+            }
+            return points.back().second;
+        }
+    };
+
+    struct Config {
+        Torque_Unit max_torque{400.0};
+        RSpeed_Unit max_rpm{7000.0};
+        RSpeed_Unit idle_rpm{800.0};
+        RSpeed_Unit redline_rpm{6500.0};
+        Inertia_Unit inertia{0.2};          // 飞轮惯量
+        Damp_Unit friction{0.01};           // 内部摩擦
+        TorqueCurve torque_curve;
+    };
+
+    explicit Engine(const Config& cfg) : config_(cfg) {
+        // 默认扭矩曲线
+        if (config_.torque_curve.points.empty()) {
+            config_.torque_curve.points = {
+                {RSpeed_Unit(0.0), Torque_Unit(0.0)},
+                {RSpeed_Unit(1000.0), Torque_Unit(350.0)},
+                {RSpeed_Unit(3000.0), Torque_Unit(400.0)},
+                {RSpeed_Unit(5000.0), Torque_Unit(380.0)},
+                {RSpeed_Unit(6500.0), Torque_Unit(300.0)},
+                {RSpeed_Unit(7000.0), Torque_Unit(0.0)}
+            };
+        }
+    }
+
+    // 计算引擎输出扭矩
+    Torque_Unit ComputeOutput(RSpeed_Unit rpm, double throttle) const {
+        throttle = std::clamp(throttle, 0.0, 1.0);
+        double rpm_d = rpm.to<double>();
+        
+        // 软限制 (Soft Limiter) - 避免硬切导致的极限环
+        double limiter_factor = 1.0;
+        if (rpm_d > config_.redline_rpm.to<double>()) {
+            double overshoot = rpm_d - config_.redline_rpm.to<double>();
+            limiter_factor = std::exp(-overshoot * 0.01);  // 平滑衰减
+        }
+        
+        Torque_Unit base_torque = config_.torque_curve.Interpolate(rpm);
+        Torque_Unit friction_torque = Torque_Unit(config_.friction.to<double>() * rpm_d);
+        
+        return Torque_Unit((base_torque.to<double>() * throttle - friction_torque.to<double>()) * limiter_factor);
+    }
+
+    // 引擎惯量动态方程
+    RAccelSpeed_Unit ComputeAngularAcceleration(
+        Torque_Unit engine_torque,
+        Torque_Unit clutch_reaction_torque) const {
+        
+        double net_torque = engine_torque.to<double>() - clutch_reaction_torque.to<double>();
+        double inertia = config_.inertia.to<double>();
+        return RAccelSpeed_Unit(net_torque / inertia);
+    }
+
+    RSpeed_Unit GetIdleRPM() const { return config_.idle_rpm; }
+    Inertia_Unit GetInertia() const { return config_.inertia; }
+
+private:
+    Config config_;
+};
+
+// ============================================================================
+// 4. 能量耗散型离合器 - 消除继电器非线性
+// ============================================================================
+class EnergyDissipationClutch {
+public:
+    struct Config {
+        Torque_Unit max_torque{500.0};      // 离合器最大传递扭矩
+        double engagement_rate{5.0};        // 接合速率 [1/s]
+        double damping{50.0};               // 阻尼系数 [N·m·s/rad]
+        double hysteresis{0.05};            // 滞环宽度 (避免抖振)
+        double thermal_capacity{1e6};       // 热容量 [J]
+        double cooling_rate{0.1};           // 冷却速率 [1/s]
+    };
+
+    explicit EnergyDissipationClutch(const Config& cfg) : config_(cfg) {}
+
+    struct State {
+        double engagement;        // 接合程度 [0,1]
+        double temperature;     // 温度 [K]
+        double energy_dissipated; // 累计耗散能量 [J]
+    };
+
+    // 计算离合器传递扭矩 - 能量耗散模型
+    // 消除所有继电器型非线性，用连续函数替代
+    Torque_Unit ComputeTorque(
+        const State& state,
+        RSpeed_Unit engine_speed,
+        RSpeed_Unit transmission_speed,
+        double pedal) const {
+        
+        pedal = std::clamp(pedal, 0.0, 1.0);  // 0=完全接合, 1=完全分离
+        
+        double dw = engine_speed.to<double>() - transmission_speed.to<double>();
+        double abs_dw = std::abs(dw);
+        
+        // 动态接合程度: 踏板控制 + 滑磨自适应
+        // 使用平滑过渡函数替代继电器逻辑
+        double target_engagement = 1.0 - pedal;  // 踏板踩下=分离
+        
+        // 滑磨模式检测: 使用连续过渡而非阈值切换
+        // 当滑磨速度大时，自动降低接合程度以保护离合器
+        double slip_factor = std::tanh(abs_dw / 5.0);  // 平滑过渡，5 rad/s 为特征速度
+        double adaptive_engagement = target_engagement * (1.0 - 0.3 * slip_factor);
+        
+        // 温度效应: 高温降低传递能力
+        double thermal_factor = 1.0 - std::clamp((state.temperature - 500.0) / 300.0, 0.0, 0.5);
+        
+        // 传递扭矩 = 接合程度 × 最大扭矩 × 热衰减
+        double T_max = config_.max_torque.to<double>() * state.engagement * thermal_factor;
+        
+        // 粘滞滑磨模型 (Stribeck 曲线的连续近似)
+        double T_transmitted;
+        if (abs_dw < 1e-3) {
+            // 静摩擦区: 连续过渡到库仑摩擦
+            T_transmitted = T_max * std::tanh(dw * 100.0);  // 100 为刚度系数
+        } else {
+            // 动摩擦区: 库仑 + 粘滞
+            double T_coulomb = T_max * (0.8 + 0.1 * std::exp(-abs_dw / 10.0));  // Stribeck 衰减
+            double T_viscous = config_.damping * dw;
+            T_transmitted = T_coulomb * std::tanh(dw * 10.0) + T_viscous;
+        }
+        
+        return Torque_Unit(T_transmitted);
+    }
+
+    // 更新离合器状态 (温度、接合程度)
+    State UpdateState(const State& prev, Torque_Unit torque, RSpeed_Unit dw, Time_Unit dt) const {
+        State next = prev;
+        double dt_s = dt.to<double>();
+        double dw_d = dw.to<double>();
+        double T = torque.to<double>();
+        
+        // 耗散功率 = 扭矩 × 滑磨速度
+        double power_dissipated = std::abs(T * dw_d);
+        next.energy_dissipated += power_dissipated * dt_s;
+        next.temperature += power_dissipated * dt_s / config_.thermal_capacity;
+        next.temperature *= (1.0 - config_.cooling_rate * dt_s);  // 冷却
+        
+        // 接合程度动态更新
+        double target = std::clamp(1.0 - 0.0, 0.0, 1.0);  // 简化
+        next.engagement += (target - prev.engagement) * config_.engagement_rate * dt_s;
+        next.engagement = std::clamp(next.engagement, 0.0, 1.0);
+        
+        return next;
+    }
+
+private:
+    Config config_;
+};
+
+// ============================================================================
+// 5. 变速器模型
+// ============================================================================
+class Transmission {
+public:
+    struct Gear {
+        double ratio;
+        double efficiency{0.97};
+    };
+
+    struct Config {
+        std::vector<Gear> gears = {
+            {3.5}, {2.1}, {1.4}, {1.0}, {0.75}, {0.6}  // 1-6档
+        };
+        double final_drive = 3.8;
+        Inertia_Unit input_inertia{0.05};
+        Inertia_Unit output_inertia{0.1};
+        Time_Unit shift_time{0.2};  // 换挡时间
+    };
+
+    explicit Transmission(const Config& cfg) : config_(cfg), current_gear_(1) {}
+
+    int GetCurrentGear() const { return current_gear_; }
+    
+    void ShiftUp() {
+        if (current_gear_ < static_cast<int>(config_.gears.size())) {
+            current_gear_++;
+            is_shifting_ = true;
+            shift_timer_ = Time_Unit(0.0);
+        }
+    }
+    
+    void ShiftDown() {
+        if (current_gear_ > 1) {
+            current_gear_--;
+            is_shifting_ = true;
+            shift_timer_ = Time_Unit(0.0);
+        }
+    }
+
+    // 计算传动比 (含主减速器)
+    double GetTotalRatio() const {
+        if (is_shifting_) return 0.0;  // 空档
+        return config_.gears[current_gear_ - 1].ratio * config_.final_drive;
+    }
+
+    // 更新换挡状态
+    void Update(Time_Unit dt) {
+        if (is_shifting_) {
+            shift_timer_ = Time_Unit(shift_timer_.to<double>() + dt.to<double>());
+            if (shift_timer_.to<double>() >= config_.shift_time.to<double>()) {
+                is_shifting_ = false;
+            }
+        }
+    }
+
+    bool IsShifting() const { return is_shifting_; }
+
+    // 计算传动系等效惯量
+    Inertia_Unit GetEquivalentInertia() const {
+        double ratio_sq = GetTotalRatio() * GetTotalRatio();
+        return Inertia_Unit(config_.input_inertia.to<double>() + 
+                          config_.output_inertia.to<double>() / ratio_sq);
+    }
+
+private:
+    Config config_;
+    int current_gear_;
+    bool is_shifting_ = false;
+    Time_Unit shift_timer_{0.0};
+};
+
+// ============================================================================
+// 6. 悬架与侧倾模型
+// ============================================================================
+class Suspension {
+public:
+    struct WheelConfig {
+        Length_Unit track_width;           // 轮距
+        Length_Unit spring_length;           // 弹簧自由长度
+        double spring_rate;                // 弹簧刚度 [N/m]
+        double damper_rate;                // 阻尼系数 [N·s/m]
+        double anti_roll_stiffness;        // 防倾杆刚度 [N·m/rad]
+        Length_Unit ride_height;           // 设计 ride height
+        double camber_base;                // 基础外倾角 [rad]
+        double toe_base;                   // 基础束角 [rad]
+        double caster;                     // 主销后倾角 [rad]
+        double kingpin_inclination;        // 主销内倾角 [rad]
+        Length_Unit scrub_radius;          // 擦地半径
+        Length_Unit mechanical_trail;      // 机械拖距
+    };
+
+    struct State {
+        Length_Unit displacement;          // 弹簧压缩量
+        Speed_Unit velocity;               // 悬架速度
+        double roll_angle;                 // 侧倾角 [rad]
+        double pitch_angle;                // 俯仰角 [rad]
+    };
+
+    struct Outputs {
+        LinearForce_Unit spring_force;
+        LinearForce_Unit damper_force;
+        Torque_Unit anti_roll_torque;
+        double camber;                     // 动态外倾角
+        double toe;                        // 动态束角
+        Length_Unit loaded_radius;         // 加载半径
+    };
+
+    explicit Suspension(const WheelConfig& cfg) : config_(cfg) {}
+
+    Outputs Compute(const State& state, double roll, double pitch, 
+                    const Vec3& chassis_velocity, const Vec3& chassis_omega) const {
+        Outputs out;
+        
+        // 弹簧力
+        double x = state.displacement.to<double>();
+        double v = state.velocity.to<double>();
+        out.spring_force = LinearForce_Unit(config_.spring_rate * x);
+        out.damper_force = LinearForce_Unit(config_.damper_rate * v);
+        
+        // 防倾杆扭矩
+        out.anti_roll_torque = Torque_Unit(config_.anti_roll_stiffness * roll);
+        
+        // 动态几何 (简化)
+        out.camber = config_.camber_base + roll * 0.5;  // 侧倾导致外倾变化
+        out.toe = config_.toe_base + pitch * 0.1;
+        
+        // 加载半径
+        out.loaded_radius = Length_Unit(config_.ride_height.to<double>() - x);
+        
+        return out;
+    }
+
+    double GetSpringRate() const { return config_.spring_rate; }
+    double GetDamperRate() const { return config_.damper_rate; }
+
+private:
+    WheelConfig config_;
+};
+
+// ============================================================================
+// 7. 底盘与整车动力学
+// ============================================================================
+class Chassis {
+public:
+    struct Config {
+        double mass;                       // 质量 [kg]
+        Inertia_Unit Ixx;                  // 绕X轴转动惯量 (侧倾)
+        Inertia_Unit Iyy;                  // 绕Y轴转动惯量 (俯仰)
+        Inertia_Unit Izz;                  // 绕Z轴转动惯量 (横摆)
+        Length_Unit wheelbase;             // 轴距
+        Length_Unit front_track;           // 前轮距
+        Length_Unit rear_track;            // 后轮距
+        Length_Unit cg_height;             // 质心高度
+        Length_Unit front_cg_dist;         // 质心到前轴距离
+        Length_Unit rear_cg_dist;          // 质心到后轴距离
+        double front_weight_dist;          // 前轴载荷分配比例
+        double drag_coeff;                 // 空气阻力系数
+        double lift_coeff;                 // 空气升力系数
+        double frontal_area;               // 迎风面积 [m²]
+    };
+
+    struct State {
+        Frame frame;                       // 底盘坐标系
+        double roll;                       // 侧倾角 [rad]
+        double pitch;                      // 俯仰角 [rad]
+        RSpeed_Unit roll_rate;             // 侧倾角速度
+        RSpeed_Unit pitch_rate;            // 俯仰角速度
+        std::array<Length_Unit, 4> suspension_disp;  // 四轮位移
+        std::array<Speed_Unit, 4> suspension_vel;    // 四轮速度
+    };
+
+    explicit Chassis(const Config& cfg) : config_(cfg) {}
+
+    // 计算轴荷转移 (含侧倾和俯仰)
+    struct LoadTransfer {
+        std::array<LinearForce_Unit, 4> Fz;  // 四轮垂直载荷
+        double roll_angle;
+        double pitch_angle;
+    };
+
+    LoadTransfer ComputeLoadTransfer(
+        const State& state,
+        const std::array<LinearForce_Unit, 4>& tire_fz,
+        const std::array<Torque_Unit, 4>& tire_mx,
+        Speed_Unit longitudinal_acc,
+        Speed_Unit lateral_acc) const {
+        
+        LoadTransfer lt;
+        
+        double m = config_.mass;
+        double g = 9.81;
+        double h = config_.cg_height.to<double>();
+        double wb = config_.wheelbase.to<double>();
+        double ft = config_.front_track.to<double>();
+        double rt = config_.rear_track.to<double>();
+        double a = config_.front_cg_dist.to<double>();
+        double b = config_.rear_cg_dist.to<double>();
+        
+        // 静态载荷
+        double Fz_front_static = m * g * config_.front_weight_dist * 0.5;
+        double Fz_rear_static = m * g * (1.0 - config_.front_weight_dist) * 0.5;
+        
+        // 纵向转移 (制动/加速)
+        double dFz_long = m * longitudinal_acc.to<double>() * h / wb;
+        
+        // 侧向转移 (转弯)
+        double dFz_lat_front = m * lateral_acc.to<double>() * h * b / (wb * ft);
+        double dFz_lat_rear = m * lateral_acc.to<double>() * h * a / (wb * rt);
+        
+        // 空气动力学
+        double v = state.frame.velocity.norm();
+        double Fz_aero = 0.5 * 1.225 * v * v * config_.frontal_area * config_.lift_coeff;
+        
+        // 四轮载荷
+        lt.Fz[0] = LinearForce_Unit(Fz_front_static - dFz_long * 0.5 - dFz_lat_front + Fz_aero * 0.25);  // FL
+        lt.Fz[1] = LinearForce_Unit(Fz_front_static - dFz_long * 0.5 + dFz_lat_front + Fz_aero * 0.25);  // FR
+        lt.Fz[2] = LinearForce_Unit(Fz_rear_static + dFz_long * 0.5 - dFz_lat_rear + Fz_aero * 0.25);   // RL
+        lt.Fz[3] = LinearForce_Unit(Fz_rear_static + dFz_long * 0.5 + dFz_lat_rear + Fz_aero * 0.25);   // RR
+        
+        // 侧倾角 (基于悬架刚度)
+        double total_roll_stiffness_front = 2.0 * 30000.0;  // 简化
+        double total_roll_stiffness_rear = 2.0 * 25000.0;
+        lt.roll_angle = m * lateral_acc.to<double>() * h / (total_roll_stiffness_front + total_roll_stiffness_rear);
+        lt.pitch_angle = m * longitudinal_acc.to<double>() * h / (total_roll_stiffness_front + total_roll_stiffness_rear) * 2.0;
+        
+        return lt;
+    }
+
+    // 刚体动力学方程 (Eigen 5.0 向量化)
+    Vec3 ComputeLinearAcceleration(
+        const Vec3& forces,
+        const Vec3& gravity) const {
+        return (forces + gravity) / config_.mass;
+    }
+
+    Vec3 ComputeAngularAcceleration(
+        const Vec3& torques,
+        const Vec3& omega) const {
+        // I * alpha + omega × (I * omega) = torque
+        Eigen::DiagonalMatrix<double, 3> I(
+            config_.Ixx.to<double>(),
+            config_.Iyy.to<double>(),
+            config_.Izz.to<double>());
+        
+        Vec3 I_omega = I * omega;
+        Vec3 gyro = omega.cross(I_omega);
+        return I.inverse() * (torques - gyro);
+    }
+
+    const Config& GetConfig() const { return config_; }
+
+private:
+    Config config_;
+};
+
+// ============================================================================
+// 8. 扭矩分配系统 (T-Vec) - 前/后/四驱主动分配
+// ============================================================================
+enum class DriveLayout { FWD, RWD, AWD, PartTime4WD };
+
+class TorqueVectoring {
+public:
+    struct Config {
+        DriveLayout layout = DriveLayout::AWD;
+        double front_bias = 0.5;           // 前轴扭矩偏置
+        double rear_bias = 0.5;            // 后轴扭矩偏置
+        double max_front_torque;           // 前轴最大扭矩
+        double max_rear_torque;            // 后轴最大扭矩
+        // 主动分配参数
+        double yaw_gain = 0.0;             // 横摆控制增益
+        double slip_gain = 0.0;            // 滑移控制增益
+    };
+
+    explicit TorqueVectoring(const Config& cfg) : config_(cfg) {}
+
+    // 计算前后轴扭矩分配
+    struct AxleTorques {
+        Torque_Unit front;
+        Torque_Unit rear;
+    };
+
+    AxleTorques ComputeDistribution(
+        Torque_Unit total_torque,
+        double steering_angle,
+        double yaw_rate,
+        double target_yaw_rate,
+        const std::array<double, 4>& wheel_slips) const {
+        
+        double T_total = total_torque.to<double>();
+        double T_front = 0.0, T_rear = 0.0;
+        
+        switch (config_.layout) {
+            case DriveLayout::FWD:
+                T_front = T_total;
+                T_rear = 0.0;
+                break;
+                
+            case DriveLayout::RWD:
+                T_front = 0.0;
+                T_rear = T_total;
+                break;
+                
+            case DriveLayout::AWD: {
+                // 基础分配
+                T_front = T_total * config_.front_bias;
+                T_rear = T_total * config_.rear_bias;
+                
+                // 主动修正 (基于横摆误差)
+                double yaw_error = yaw_rate - target_yaw_rate;
+                double correction = config_.yaw_gain * yaw_error;
+                
+                // 滑移修正
+                double avg_front_slip = (wheel_slips[0] + wheel_slips[1]) * 0.5;
+                double avg_rear_slip = (wheel_slips[2] + wheel_slips[3]) * 0.5;
+                double slip_diff = avg_rear_slip - avg_front_slip;
+                double slip_correction = config_.slip_gain * slip_diff;
+                
+                T_front += correction + slip_correction;
+                T_rear -= correction + slip_correction;
+                
+                // 限制
+                T_front = std::clamp(T_front, 0.0, config_.max_front_torque);
+                T_rear = std::clamp(T_rear, 0.0, config_.max_rear_torque);
+                
+                // 重新归一化
+                double sum = T_front + T_rear;
+                if (sum > 0) {
+                    T_front = T_front / sum * T_total;
+                    T_rear = T_rear / sum * T_total;
+                }
+                break;
+            }
+            
+            case DriveLayout::PartTime4WD:
+                // 分时四驱: 根据条件切换
+                if (std::abs(avg_rear_slip) > 0.15) {
+                    T_front = T_total * 0.5;
+                    T_rear = T_total * 0.5;
+                } else {
+                    T_front = 0.0;
+                    T_rear = T_total;
+                }
+                break;
+        }
+        
+        return {Torque_Unit(T_front), Torque_Unit(T_rear)};
+    }
+
+private:
+    Config config_;
+};
+
+// ============================================================================
+// 9. 整车集成系统
+// ============================================================================
+class Vehicle {
+public:
+    struct Config {
+        Chassis::Config chassis;
+        std::array<Suspension::WheelConfig, 4> suspension;
+        Engine::Config engine;
+        Transmission::Config transmission;
+        Differential::Config front_diff;
+        Differential::Config rear_diff;
+        Differential::Config center_diff;
+        TorqueVectoring::Config torque_vectoring;
+        PacejkaMF62::Coefficients tire_coeffs;
+        EnergyDissipationClutch::Config clutch;
+    };
+
+    Vehicle(const Config& cfg) 
+        : chassis_(cfg.chassis),
+          engine_(cfg.engine),
+          transmission_(cfg.transmission),
+          front_diff_(cfg.front_diff),
+          rear_diff_(cfg.rear_diff),
+          center_diff_(cfg.center_diff),
+          tvec_(cfg.torque_vectoring),
+          clutch_(cfg.clutch) {
+        
+        for (int i = 0; i < 4; ++i) {
+            suspensions_[i] = std::make_unique<Suspension>(cfg.suspension[i]);
+            tires_[i] = std::make_unique<PacejkaMF62>(cfg.tire_coeffs);
+        }
+    }
+
+    // 主状态向量 (用于积分器)
+    struct FullState {
+        // 底盘
+        Vec3 position;
+        Eigen::Quaterniond orientation;
+        Vec3 velocity;
+        Vec3 angular_velocity;
+        double roll, pitch;
+        RSpeed_Unit roll_rate, pitch_rate;
+        
+        // 动力传动
+        RSpeed_Unit engine_rpm;
+        EnergyDissipationClutch::State clutch_state;
+        
+        // 车轮
+        std::array<RSpeed_Unit, 4> wheel_speeds;
+        std::array<PacejkaMF62::TransientState, 4> tire_transient;
+        std::array<Length_Unit, 4> suspension_disp;
+        std::array<Speed_Unit, 4> suspension_vel;
+    };
+
+    // 计算状态导数 (用于 RK4/隐式积分)
+    struct StateDerivative {
+        Vec3 velocity;              // 位置导数
+        Vec3 acceleration;          // 速度导数
+        Vec3 angular_acceleration;  // 角加速度
+        RAccelSpeed_Unit engine_alpha;
+        std::array<RAccelSpeed_Unit, 4> wheel_alphas;
+    };
+
+    StateDerivative ComputeDerivative(
+        const FullState& state,
+        double throttle,
+        double brake,
+        double steering,
+        double clutch_pedal,
+        Time_Unit dt) const {
+        
+        StateDerivative deriv;
+        
+        // === 1. 动力传动链 ===
+        Torque_Unit engine_torque = engine_.ComputeOutput(state.engine_rpm, throttle);
+        Torque_Unit clutch_torque = clutch_.ComputeTorque(
+            state.clutch_state, state.engine_rpm, 
+            RSpeed_Unit(state.wheel_speeds[2].to<double>() * transmission_.GetTotalRatio()),  // 简化
+            clutch_pedal);
+        
+        deriv.engine_alpha = engine_.ComputeAngularAcceleration(engine_torque, clutch_torque);
+        
+        // === 2. 扭矩分配 ===
+        auto axle_torques = tvec_.ComputeDistribution(
+            clutch_torque, steering, state.angular_velocity.z(), 0.0,
+            {0.0, 0.0, 0.0, 0.0});  // 简化滑移输入
+        
+        // === 3. 差速器 ===
+        auto front_split = front_diff_.Compute(
+            axle_torques.front,
+            state.wheel_speeds[0], state.wheel_speeds[1]);
+        auto rear_split = rear_diff_.Compute(
+            axle_torques.rear,
+            state.wheel_speeds[2], state.wheel_speeds[3]);
+        
+        // === 4. 轮胎力 ===
+        std::array<PacejkaMF62::Outputs, 4> tire_forces;
+        std::array<LinearForce_Unit, 4> Fz;
+        
+        // 计算载荷转移
+        Chassis::State chassis_state;
+        chassis_state.frame.velocity = state.velocity;
+        chassis_state.roll = state.roll;
+        chassis_state.pitch = state.pitch;
+        // ... 填充其他状态
+        
+        auto load_transfer = chassis_.ComputeLoadTransfer(
+            chassis_state, Fz, {Torque_Unit(0), Torque_Unit(0), Torque_Unit(0), Torque_Unit(0)},
+            Speed_Unit(deriv.acceleration.x()), Speed_Unit(deriv.acceleration.y()));
+        
+        for (int i = 0; i < 4; ++i) {
+            PacejkaMF62::Inputs tire_in;
+            tire_in.Fz = load_transfer.Fz[i];
+            tire_in.kappa = 0.0;  // 从轮速计算
+            tire_in.alpha = steering * (i < 2 ? 1.0 : 0.0);  // 简化
+            tire_in.gamma = suspensions_[i]->Compute(
+                Suspension::State{state.suspension_disp[i], state.suspension_vel[i], state.roll, state.pitch},
+                state.roll, state.pitch, state.velocity, state.angular_velocity).camber;
+            tire_in.phi_t = 0.0;  // 转向滑移
+            tire_in.Vx = Speed_Unit(state.velocity.x());
+            tire_in.pressure = 220000.0;
+            tire_in.omega = state.wheel_speeds[i];
+            
+            tire_forces[i] = tires_[i]->Compute(tire_in);
+        }
+        
+        // === 5. 底盘动力学 ===
+        Vec3 total_force = Vec3::Zero();
+        Vec3 total_torque = Vec3::Zero();
+        
+        for (int i = 0; i < 4; ++i) {
+            // 轮胎力转换到车身坐标系
+            Vec3 F_tire(tire_forces[i].Fx.to<double>(), tire_forces[i].Fy.to<double>(), 0.0);
+            total_force += F_tire;
+            
+            // 力矩
+            Vec3 r_wheel;  // 轮心位置
+            // ... 根据悬架几何计算
+            total_torque += r_wheel.cross(F_tire);
+        }
+        
+        // 空气动力学
+        double v = state.velocity.norm();
+        double F_drag = 0.5 * 1.225 * v * v * chassis_.GetConfig().frontal_area * chassis_.GetConfig().drag_coeff;
+        total_force.x() -= F_drag;
+        
+        deriv.acceleration = chassis_.ComputeLinearAcceleration(total_force, Vec3(0, 0, -9.81 * chassis_.GetConfig().mass));
+        deriv.angular_acceleration = chassis_.ComputeAngularAcceleration(total_torque, state.angular_velocity);
+        
+        // 车轮角加速度
+        for (int i = 0; i < 4; ++i) {
+            double T_wheel = (i < 2 ? front_split.first : rear_split.first).to<double>();
+            double I_wheel = 1.0;  // 车轮惯量
+            deriv.wheel_alphas[i] = RAccelSpeed_Unit((T_wheel - tire_forces[i].Fx.to<double>() * 0.3) / I_wheel);
+        }
+        
+        return deriv;
+    }
+
+    // 单步积分 (RK4)
+    FullState IntegrateRK4(const FullState& state, double throttle, double brake, 
+                          double steering, double clutch_pedal, Time_Unit dt) {
+        // 简化 RK4 实现
+        auto k1 = ComputeDerivative(state, throttle, brake, steering, clutch_pedal, dt);
+        // ... 完整 RK4 需要中间状态
+        return state;
+    }
+
+private:
+    Chassis chassis_;
+    Engine engine_;
+    Transmission transmission_;
+    Differential front_diff_;
+    Differential rear_diff_;
+    Differential center_diff_;
+    TorqueVectoring tvec_;
+    EnergyDissipationClutch clutch_;
+    std::array<std::unique_ptr<Suspension>, 4> suspensions_;
+    std::array<std::unique_ptr<PacejkaMF62>, 4> tires_;
+};
+
+// ============================================================================
+// 10. 求解器接口
+// ============================================================================
+class Solver {
+public:
+    virtual ~Solver() = default;
+    virtual Vehicle::FullState Step(const Vehicle& vehicle, const Vehicle::FullState& state,
+                                   double throttle, double brake, double steering,
+                                   double clutch, Time_Unit dt) = 0;
+};
+
+class RK4Solver : public Solver {
+public:
+    Vehicle::FullState Step(const Vehicle& vehicle, const Vehicle::FullState& state,
+                           double throttle, double brake, double steering,
+                           double clutch, Time_Unit dt) override {
+        return vehicle.IntegrateRK4(state, throttle, brake, steering, clutch, dt);
+    }
+};
+
+} // namespace vdyn

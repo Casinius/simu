@@ -1,26 +1,36 @@
-// main.cpp (演示使用BDF2迭代器)
-#include "vehicle.hpp"
-#include <cstdio>
-
+#include "Eigen/Core"
+#include "solve.h"
+#include <iostream>
+#include <fpm/fixed.hpp>
 int main() {
-  Vehicle car;
-  BDF2Integrator integrator;
-  ControlInput input;
-  input.throttle = 0.3;
-  input.brake = 0.0;
-  input.steering = 0.0;
-  input.clutch_pedal = 1.0;
-  input.gear_request = 1;
+  //using EMatType = Eigen::Matrix<fpm::fixed_8_24, Eigen::Dynamic, 1>;
 
-  Time_Unit dt = 0.01;
-  for (int step=0; step<5000; ++step) {
-    car.set_control(input);
-    integrator.step(car, dt);
-    if (step % 500 == 0) {
-      VehicleState state;
-      car.get_state(state);
-      printf("t=%.2f s, v=%.2f m/s, rpm=%.1f\n", step*dt, state.vehicle_speed, state.engine_rpm);
-    }
-  }
-  return 0;
+    // 示例微分方程: dy/dt = -y,  y(0) = 1  (解析解 y = e^{-t})
+    auto rhs = [](double t, const Eigen::VectorXd& y) -> Eigen::VectorXd {
+        Eigen::VectorXd f(1);
+        f(0) = -y(0);
+        return f;
+    };
+
+    Eigen::VectorXd y0(1);
+    y0 << 1.0;
+
+    std::vector<double> times;
+    std::vector<Eigen::VectorXd> states;
+
+    // 使用 RK45
+    RK45Solver rk45(1e-8, 1e-6, 1e-20, 0.5);
+    rk45.solve(rhs, 0.0, 5.0, y0, 0.1, times, states);
+    std::cout << "RK45: " << times.size() << " steps\n";
+    std::cout << "RK45 res: "<< states.at(states.size()-1) << "\n";
+
+
+    // 使用 BDF2 (固定步长 0.1)
+    BDF2Solver bdf2(1e-10, 30);
+    times.clear(); states.clear();
+    bdf2.solve(rhs, 0.0, 5.0, y0, 0.1, times, states);
+    std::cout << "BDF2 steps: " << times.size() << " steps\n";
+    std::cout << "BDF2 res: "<< states.at(states.size()-1) << "\n";
+
+    return 0;
 }

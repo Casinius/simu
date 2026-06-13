@@ -1,9 +1,24 @@
 add_rules("mode.debug", "mode.release")
+add_rules("plugin.compile_commands.autoupdate", {outputdir = "."})
+set_languages("c++latest")
 
+set_policy("build.sanitizer.address", true)
+add_requires("eigen","units","fpm")
 target("simu_gd")
     set_kind("binary")
     add_files("src/*.cpp")
+    add_files("src/*.cxx")
+    add_packages("eigen","units","fpm")
 
+    if is_plat("linux") then
+        add_syslinks("pthread", "dl")
+    end
+    
+    -- 修复3：如果是 debug 模式且启用了 ASan，添加运行时库路径
+    if is_mode("debug") then
+        add_ldflags("-fsanitize=address", "-fno-omit-frame-pointer")
+        add_cxflags("-fsanitize=address", "-fno-omit-frame-pointer")
+    end
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
 --
