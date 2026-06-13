@@ -1,36 +1,26 @@
+// main.cpp (演示使用BDF2迭代器)
 #include "vehicle.hpp"
 #include <cstdio>
 
 int main() {
-    Vehicle car;
-    car.set_throttle(0.3);
-    car.set_steering(0.1);
-    const double dt = 0.02;
-    car.set_steering(0.0);
-    int g_time = 0;
-    double spd,prev_spd = 0.0;
-    bool once_flag = false;
-    car.request_shift(1);
-    for (int step = 0; step < 9999; ++step) {
-        spd = car.get_state().vx;
-        if (g_time!=10) {
-          g_time++;
-        }else {
-        g_time = 0;
-        }
-        car.update(dt);
-        auto s = car.get_state();
-        if (g_time == 2) {
-           printf("t=%.2f vx=%.5f engine=%.4f,drvt=%.2f,", step*dt, s.vx, s.engine_rpm,s.net_drive_torque);
-           //car.request_shift(2);
-           printf("w_rpm=%f \n",car.get_state().wheel_fr_rpm);
-        }
-        if (spd-prev_spd<0.0005 && step>2000 && once_flag==false) {
-          car.request_shift(2);
-          printf("shifted!\n");
-          once_flag=true;
-        }
-        prev_spd = spd;
+  Vehicle car;
+  BDF2Integrator integrator;
+  ControlInput input;
+  input.throttle = 0.3;
+  input.brake = 0.0;
+  input.steering = 0.0;
+  input.clutch_pedal = 1.0;
+  input.gear_request = 1;
+
+  Time_Unit dt = 0.01;
+  for (int step=0; step<5000; ++step) {
+    car.set_control(input);
+    integrator.step(car, dt);
+    if (step % 500 == 0) {
+      VehicleState state;
+      car.get_state(state);
+      printf("t=%.2f s, v=%.2f m/s, rpm=%.1f\n", step*dt, state.vehicle_speed, state.engine_rpm);
     }
-    return 0;
+  }
+  return 0;
 }
