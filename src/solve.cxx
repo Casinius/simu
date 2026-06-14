@@ -331,3 +331,141 @@ State<Scalar> BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar>& f, Scalar t_n
     std::cerr << "BDF2: Newton iteration did not converge at t = " << t_n2 << std::endl;
     return State<Scalar>();   // 返回空向量表示失败
 }
+
+
+
+
+
+
+
+// ======================================================================
+// Generalized-α 实现
+// ======================================================================
+template<typename Scalar>
+GeneralizedAlphaSolver<Scalar>::GeneralizedAlphaSolver(Scalar rho_inf,
+                                                        Scalar newton_tol,
+                                                        int max_iter)
+    : rho_inf_(rho_inf), newton_tol_(newton_tol), max_iter_(max_iter) {
+    compute_parameters(rho_inf_);
+}
+
+template<typename Scalar>
+void GeneralizedAlphaSolver<Scalar>::compute_parameters(Scalar rho_inf) {
+    // 根据 rho_inf 计算谱半径参数
+    // 公式: rho_inf = (alpha_m + alpha_f - 1) / (alpha_m - alpha_f + 1)
+    // 常用选取: alpha_m = (2*rho_inf - 1)/(rho_inf + 1), alpha_f = rho_inf/(rho_inf + 1)
+    // beta = 0.25*(1 - alpha_m + alpha_f)^2, gamma = 0.5 - alpha_m + alpha_f
+    Scalar r = rho_inf_;
+    alpha_f_ = r / (r + 1);
+    alpha_m_ = (2 * r - 1) / (r + 1);
+    beta_ = 0.25 * (1 - alpha_m_ + alpha_f_) * (1 - alpha_m_ + alpha_f_);
+    gamma_ = 0.5 - alpha_m_ + alpha_f_;
+}
+
+template<typename Scalar>
+void GeneralizedAlphaSolver<Scalar>::solve(const SecondOrderRHSFunc& rhs,
+                                            Scalar t0, Scalar t1,
+                                            const State& q0, const State& v0, Scalar h0,
+                                            std::vector<Scalar>& times,
+                                            std::vector<State>& states_q,
+                                            std::vector<State>& states_v) {
+    times.clear();
+    states_q.clear();
+    states_v.clear();
+
+    Scalar t = t0;
+    State q = q0;
+    State v = v0;
+    // 初始加速度 a0 = rhs(t0, q0, v0)
+    State a = rhs(t0, q0, v0);
+
+    times.push_back(t);
+    states_q.push_back(q);
+    states_v.push_back(v);
+
+    Scalar dt = h0;   // 固定步长
+
+    while (t < t1 - 1e-12) {
+        if (t + dt > t1) dt = t1 - t;
+
+        State q_next, v_next, a_next;
+        bool success = step(rhs, t, dt, q, v, a, q_next, v_next, a_next);
+        if (!success) {
+            std::cerr << "GeneralizedAlpha: Newton iteration failed at t = " << t << std::endl;
+            break;
+        }
+
+        t += dt;
+        q = std::move(q_next);
+        v = std::move(v_next);
+        a = std::move(a_next);
+
+        times.push_back(t);
+        states_q.push_back(q);
+        states_v.push_back(v);
+    }
+}
+
+template<typename Scalar>
+bool GeneralizedAlphaSolver<Scalar>::step(const SecondOrderRHSFunc& rhs,
+                                           Scalar t_n, Scalar dt,
+                                           const State& q_n, const State& v_n, const State& a_n,
+                                           State& q_n1, State& v_n1, State& a_n1) {
+    // 预测值 (初始猜测)
+    q_n1 = q_n + dt * v_n + dt * dt * (0.5 - beta_) * a_n;
+    v_n1 = v_n + dt * (1 - gamma_) * a_n;
+    a_n1 = a_n;   // 加速度初始猜测
+
+    // 牛顿迭代求解加速度 a_{n+1}
+    int n = q_n.size();
+    State residual, delta_a;
+    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+    Scalar eps = 1e-8;   // 数值微扰
+
+    for (int iter = 0; iter < max_iter_; ++iter) {
+        // 根据当前猜测更新位移和速度 (隐式公式)
+        q_n1 = q_n + dt * v_n + dt * dt * ((0.5 - beta_) * a_n + beta_ * a_n1);
+        v_n1 = v_n + dt * ((1 - gamma_) * a_n + gamma_ * a_n1);
+
+        // 计算残差:  residual = M*a_{n+1} - F(t_{n+1}, q_{n+1}, v_{n+1})
+        // 这里假设质量矩阵为单位阵，若需要一般质量矩阵可由用户提供，此处简化
+        // 实际使用中可将 rhs 定义为返回总力 (F = M*a)，故残差 = a_n1 - rhs(t_n1, q_n1, v_n1)
+        Scalar t_n1 = t_n + dt;
+        Scalar alpha_m = alpha_m_, alpha_f = alpha_f_;  // 用于下一时刻的中间值，此处略
+        // 注意：Generalized-α 的残差定义包含中间步:
+        // M a_{n+1-αm} + C v_{n+1-αf} + K q_{n+1-αf} = F
+        // 为简化，我们使用最简形式：残差 = a_n1 - rhs(t_n1, q_n1, v_n1)
+        State a_pred = rhs(t_n1, q_n1, v_n1);
+        residual = a_n1 - a_pred;
+
+        if (residual.norm() < newton_tol_) {
+            return true;   // 收敛
+        }
+
+        // 数值雅可比: J = d(residual)/d(a_n1) = I - (d(rhs)/d(a_n1))
+        // 但 rhs 显式依赖于 a_n1 通过 q_n1, v_n1 间接关联，故使用全扰动
+        J.setZero();
+        for (int j = 0; j < n; ++j) {
+            State a_plus = a_n1;
+            a_plus(j) += eps;
+            State a_minus = a_n1;
+            a_minus(j) -= eps;
+
+            // 计算扰动后的位移和速度
+            State q_plus = q_n + dt * v_n + dt * dt * ((0.5 - beta_) * a_n + beta_ * a_plus);
+            State v_plus = v_n + dt * ((1 - gamma_) * a_n + gamma_ * a_plus);
+            State q_minus = q_n + dt * v_n + dt * dt * ((0.5 - beta_) * a_n + beta_ * a_minus);
+            State v_minus = v_n + dt * ((1 - gamma_) * a_n + gamma_ * a_minus);
+
+            State r_plus = a_plus - rhs(t_n + dt, q_plus, v_plus);
+            State r_minus = a_minus - rhs(t_n + dt, q_minus, v_minus);
+            J.col(j) = (r_plus - r_minus) / (2.0 * eps);
+        }
+
+        // 求解线性系统 J * delta = -residual
+        Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
+        delta_a = lu.solve(-residual);
+        a_n1 += delta_a;
+    }
+    return false;   // 未收敛
+}

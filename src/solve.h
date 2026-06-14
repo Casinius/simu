@@ -121,4 +121,72 @@ private:
     Scalar h_min_, h_max_;    // 步长约束
     Scalar safety_, fac_min_, fac_max_;  // 自适应系数
 };
+
+template<typename Scalar>
+using SecondOrderRHSFunc = std::function<State<Scalar>(Scalar, const State<Scalar>&, const State<Scalar>&)>;
+template<typename Scalar>
+class SecondOrderODESolver {
+public:
+    using State = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
+
+    virtual ~SecondOrderODESolver() = default;
+
+    /**
+     * 求解二阶初值问题
+     * @param rhs       右端函数，返回加速度 a = f(t, q, v)
+     * @param t0        起始时间
+     * @param t1        结束时间
+     * @param q0        初始位移
+     * @param v0        初始速度
+     * @param h0        固定步长
+     * @param times     输出时间点
+     * @param states_q  输出位移序列
+     * @param states_v  输出速度序列
+     */
+    virtual void solve(const SecondOrderRHSFunc<Scalar>& rhs,
+                       Scalar t0, Scalar t1,
+                       const State& q0, const State& v0, Scalar h0,
+                       std::vector<Scalar>& times,
+                       std::vector<State>& states_q,
+                       std::vector<State>& states_v) = 0;
+};
+template<typename Scalar>
+class GeneralizedAlphaSolver : public SecondOrderODESolver<Scalar> {
+public:
+    using State = typename SecondOrderODESolver<Scalar>::State;
+    using SecondOrderRHSFunc = typename SecondOrderODESolver<Scalar>::SecondOrderRHSFunc;
+
+    /**
+     * 构造函数
+     * @param rho_inf  高频耗散参数 ∈ [0,1]；0 = 最大耗散，1 = 无耗散（保守）
+     * @param newton_tol  牛顿迭代容差
+     * @param max_iter    最大牛顿迭代次数
+     */
+    explicit GeneralizedAlphaSolver(Scalar rho_inf = 0.5,
+                                    Scalar newton_tol = 1e-10,
+                                    int max_iter = 30);
+
+    void solve(const SecondOrderRHSFunc& rhs,
+               Scalar t0, Scalar t1,
+               const State& q0, const State& v0, Scalar h0,
+               std::vector<Scalar>& times,
+               std::vector<State>& states_q,
+               std::vector<State>& states_v) override;
+
+private:
+    // 计算算法参数
+    void compute_parameters(Scalar rho_inf);
+
+    // 单步更新 (隐式求解加速度 a_{n+1})
+    bool step(const SecondOrderRHSFunc& rhs,
+              Scalar t_n, Scalar dt,
+              const State& q_n, const State& v_n, const State& a_n,
+              State& q_n1, State& v_n1, State& a_n1);
+
+    Scalar rho_inf_;
+    Scalar alpha_m_, alpha_f_, beta_, gamma_;
+    Scalar newton_tol_;
+    int max_iter_;
+};
+
 #endif // ODE_SOLVER_H

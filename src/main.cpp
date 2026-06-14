@@ -33,7 +33,7 @@ int main() {
   BDF2Solver<Scalar> bdf2(1e-10, 30);
   times.clear();
   states.clear();
-  bdf2.solve(rhs, 0.0, 5.0, y0, 1e-3, times, states);
+  bdf2.solve(rhs, 0.0, 5.0, y0, 0.08, times, states);
   std::cout << "BDF2 steps: " << times.size() << " steps\n";
   std::cout << "BDF2 res: " << states.at(states.size() - 1) << "\n";
 
