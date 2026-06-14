@@ -135,7 +135,6 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   times.clear();
   states.clear();
 
-
   // 第一步：使用隐式欧拉生成 y1（固定步长 h）
   State<Scalar> y1 = y0;
   // 步长限制
@@ -148,7 +147,6 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   times.push_back(t);
   states.push_back(y);
 
-  
   const int n = y0.size();
   const Scalar newton_tol = newton_tol_;
   const int max_iter = max_iter_;
@@ -375,46 +373,44 @@ const Scalar eps = Scalar(1e-8);   // 固定绝对扰动，适应跨尺度
     y_next += delta;
   }
 
+  /*
 
+   for (int iter = 0; iter < max_iter_; ++iter) {
+      Scalar t_mid = t + c * h;
+      State<Scalar> y_mid = (1 - a) * y + a * y_next;
+      residual = y_next - (y + h * f(t_mid, y_mid));
 
-/*
+      if (residual.norm() < newton_tol_) {
+        return {std::move(y_next), 0, h};
+      }
 
- for (int iter = 0; iter < max_iter_; ++iter) {
-    Scalar t_mid = t + c * h;
-    State<Scalar> y_mid = (1 - a) * y + a * y_next;
-    residual = y_next - (y + h * f(t_mid, y_mid));
+      // 数值雅可比：固定绝对扰动
+      for (int j = 0; j < n; ++j) {
+        State<Scalar> y_plus = y_next, y_minus = y_next;
+        y_plus(j) += eps;
+        y_minus(j) -= eps;
 
-    if (residual.norm() < newton_tol_) {
-      return {std::move(y_next), 0, h};
+        State<Scalar> y_mid_plus = (1 - a) * y + a * y_plus;
+        State<Scalar> y_mid_minus = (1 - a) * y + a * y_minus;
+        State<Scalar> res_plus = y_plus - (y + h * f(t_mid, y_mid_plus));
+        State<Scalar> res_minus = y_minus - (y + h * f(t_mid, y_mid_minus));
+        J.col(j) = (res_plus - res_minus) / (2 * eps);
+      }
+
+      Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
+          lu(J);
+      delta = lu.solve(-residual);
+      if (delta.array().isNaN().any()) {
+        std::cerr << "IRK2: singular Jacobian at t=" << t << ", iter=" << iter
+                  << std::endl;
+        return {State<Scalar>(), 0, h};
+      }
+      y_next += delta;
     }
 
-    // 数值雅可比：固定绝对扰动
-    for (int j = 0; j < n; ++j) {
-      State<Scalar> y_plus = y_next, y_minus = y_next;
-      y_plus(j) += eps;
-      y_minus(j) -= eps;
 
-      State<Scalar> y_mid_plus = (1 - a) * y + a * y_plus;
-      State<Scalar> y_mid_minus = (1 - a) * y + a * y_minus;
-      State<Scalar> res_plus = y_plus - (y + h * f(t_mid, y_mid_plus));
-      State<Scalar> res_minus = y_minus - (y + h * f(t_mid, y_mid_minus));
-      J.col(j) = (res_plus - res_minus) / (2 * eps);
-    }
+  */
 
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-        lu(J);
-    delta = lu.solve(-residual);
-    if (delta.array().isNaN().any()) {
-      std::cerr << "IRK2: singular Jacobian at t=" << t << ", iter=" << iter
-                << std::endl;
-      return {State<Scalar>(), 0, h};
-    }
-    y_next += delta;
-  }
-
-
-*/
- 
   std::cerr << "IRK2: Startup iteration did not converge at t=" << t
             << std::endl;
   return {State<Scalar>(), 0, h};
@@ -443,6 +439,7 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
     const Scalar fac_min = 0.2;
     const Scalar fac_max = 5.0;
     const Scalar h_min = 1e-12;
+    const int max_reject = 50;   // 最大连续拒绝次数，防死循环
 
     Scalar h = std::min(h0, t1 - t0);
     if (h <= 0) return;
@@ -472,14 +469,12 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
         }
         Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
         y1 += lu.solve(-res);
-        std::cerr << "startup iter=" << iter << " res_norm=" << res.norm() 
-              << " y1=" << y1.transpose() << std::endl;
     }
     if (!startup_ok) {
         std::cerr << "BDF2: startup step failed at t=" << t << std::endl;
         return;
     }
-    
+
     Scalar t1_bdf = t + h;
     times.push_back(t1_bdf); states.push_back(y1);
 
@@ -489,24 +484,33 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
     Scalar t_nm1 = t0;
     Scalar t_n   = t1_bdf;
     Scalar h_old = h;
+    int n_reject = 0;   // 连续拒绝计数器
 
     while (t_n < t1 - 1e-12) {
-        if (t_n + h > t1) h = t1 - t_n;
+        // 计算实际尝试步长，限制不越界
+        Scalar h_step = h;
+        bool is_last_step = false;
+        if (t_n + h_step > t1) {
+            h_step = t1 - t_n;
+            is_last_step = true;
+        }
 
         // 预测：线性外推
-        Scalar ratio = (h_old > 0) ? (h / h_old) : 1.0;
+        Scalar ratio = (h_old > 0) ? (h_step / h_old) : 1.0;
         State<Scalar> y_pred = y_n + (y_n - y_nm1) * ratio;
 
         // BDF2 校正
-        State<Scalar> y_np1 = abdf2_step(f, t_nm1, y_nm1, t_n, y_n, h);
+        State<Scalar> y_np1 = abdf2_step(f, t_nm1, y_nm1, t_n, y_n, h_step);
         if (y_np1.size() == 0) {
+            // abdf2_step 内部牛顿不收敛
             h *= 0.5;
             if (h < h_min) {
                 std::cerr << "BDF2: step size too small at t=" << t_n << std::endl;
                 break;
             }
             h_old = h;
-            continue;  // 必须 continue，否则下面用空向量
+            n_reject = 0;  // 重置拒绝计数（这是收敛失败不是误差过大）
+            continue;
         }
 
         // 误差估计
@@ -518,24 +522,49 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
         }
 
         if (err_norm <= 1.0) {
-            Scalar t_np1 = t_n + h;
+            // ========== 接受该步 ==========
+            Scalar t_np1 = t_n + h_step;
             times.push_back(t_np1);
             states.push_back(y_np1);
 
             y_nm1 = y_n; y_n = y_np1;
             t_nm1 = t_n; t_n = t_np1;
-            h_old = h;
+            h_old = h_step;
+            n_reject = 0;  // 重置拒绝计数
 
             if (t_n >= t1) break;
 
-            Scalar fac = safety * std::pow(std::max(err_norm, 1e-10), -0.5);
+            // 计算下一步的推荐步长
+            Scalar fac = safety * std::pow(std::max(err_norm, Scalar(1e-10)), -0.5);
             fac = std::clamp(fac, fac_min, fac_max);
-            h = std::min(h * fac, t1 - t_n);
+            h = h_step * fac;   // 基于实际使用的 h_step 放大
         } else {
-            Scalar fac = safety * std::pow(std::max(err_norm, 1e-10), -0.5);
-            fac = std::clamp(fac, fac_min, 0.9);
-            h = std::max(h * fac, h_min);
+            // ========== 拒绝该步 ==========
+            ++n_reject;
+            if (n_reject > max_reject) {
+                std::cerr << "BDF2: too many rejections at t=" << t_n 
+                          << ", err_norm=" << err_norm << std::endl;
+                break;
+            }
+
+            Scalar fac = safety * std::pow(std::max(err_norm, Scalar(1e-10)), -0.5);
+            fac = std::clamp(fac, fac_min, Scalar(0.9));
+            h = std::max(h_step * fac, h_min);
             h_old = h;
+
+            // 防死循环：如果已经是最小步长且还是失败，直接退出
+            if (h <= h_min && h_step <= h_min) {
+                std::cerr << "BDF2: cannot reduce step further at t=" << t_n 
+                          << ", h=h_min=" << h_min << std::endl;
+                break;
+            }
+
+            // 如果是最后一步（h_step 被强制设为 t1-t_n）且被拒绝，
+            // 需要确保 h 不会又被强制恢复
+            if (is_last_step) {
+                // 最后一步被拒绝：缩小 h 后继续尝试，但不再标记为最后一步
+                // h 已经被缩小，下一次循环 h_step = min(h, t1-t_n) 会自然处理
+            }
         }
     }
 }
@@ -553,7 +582,7 @@ AdaptiveBDF2Solver<Scalar>::abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
     State<Scalar> F = y - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y));
     if (F.norm() < newton_tol_) return y;
 
-    
+
 
     Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
     for (int j = 0; j < n; ++j) {
@@ -561,7 +590,7 @@ AdaptiveBDF2Solver<Scalar>::abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
       State<Scalar> y_plus = y, y_minus = y;
       y_plus(j) += eps; y_minus(j) -= eps;
 
-        
+
 
       State<Scalar> F_plus = y_plus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_plus));
       State<Scalar> F_minus = y_minus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_minus));

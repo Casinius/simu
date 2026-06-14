@@ -219,6 +219,7 @@ private:
 
   Scalar newton_tol_;
   int max_iter_;
+  Scalar prev_res_norm;
 };
 
 

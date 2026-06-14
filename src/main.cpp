@@ -92,7 +92,7 @@ int main() {
 
 
   
-  BDF2Solver<Scalar> ors(1e-10, 30);
+  AdaptiveBDF2Solver<Scalar> ors(1e-10, 30);
   times.clear();
   states.clear();
   std::chrono::high_resolution_clock::time_point bdf_s = std::chrono::high_resolution_clock::now();
