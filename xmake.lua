@@ -4,11 +4,13 @@ set_languages("c++latest")
 
 set_policy("build.sanitizer.address", true)
 add_requires("eigen","units","fpm")
+add_requires("boost",{config = {cmake = false}})
 target("simu_gd")
     set_kind("binary")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
     add_packages("eigen","units","fpm")
+    add_packages("boost")
 
     if is_plat("linux") then
         add_syslinks("pthread", "dl")
