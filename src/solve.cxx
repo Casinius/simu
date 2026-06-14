@@ -220,6 +220,7 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
     }
   }
 }
+// not reuse , correct impl
 
 template <class Scalar>
 State<Scalar>
@@ -267,6 +268,62 @@ BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
   return State<Scalar>(); // 返回空向量表示失败
 }
 
+
+/*
+template <class Scalar>
+State<Scalar>
+BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
+                                       const State<Scalar> &y_n, Scalar t_n1,
+                                       const State<Scalar> &y_n1, Scalar h) {
+    Scalar t_n2 = t_n1 + h;
+    int n = y_n.size();
+    State<Scalar> y = y_n1;                 // 初始猜测
+    State<Scalar> F, delta;
+    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu;
+    bool jac_uptodate = false;
+
+    for (int iter = 0; iter < max_iter_; ++iter) {
+        F = y - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y));
+        Scalar res_norm = F.norm();
+        if (res_norm < newton_tol_) {
+            return y;
+        }
+
+        // 仅在第一次迭代或雅可比需要更新时计算
+        if (!jac_uptodate) {
+            Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+            for (int j = 0; j < n; ++j) {
+                Scalar eps = this->__eps_policy(y, j, res_norm);
+                State<Scalar> y_plus = y, y_minus = y;
+                y_plus(j) += eps; y_minus(j) -= eps;
+                State<Scalar> F_plus = y_plus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n +
+                                                 (2.0/3.0) * h * f(t_n2, y_plus));
+                State<Scalar> F_minus = y_minus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n +
+                                                   (2.0/3.0) * h * f(t_n2, y_minus));
+                J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+            }
+            lu.compute(J);
+            jac_uptodate = true;
+        }
+
+        delta = lu.solve(-F);
+        if (delta.array().isNaN().any()) {
+            std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
+            return State<Scalar>();
+        }
+        y += delta;
+
+        // 可选：检测收敛速度，若残差下降过慢则标记雅可比需更新
+        if (iter > 0 && res_norm > 0.5 * prev_res_norm) {
+            jac_uptodate = false;   // 下次迭代重新计算雅可比
+        }
+        prev_res_norm = res_norm;
+    }
+    std::cerr << "BDF2: Newton did not converge at t=" << t_n2 << std::endl;
+    return State<Scalar>();
+}
+
+*/
 // ======================================================================
 // IRK2 实现 (二阶隐式 Runge‑Kutta)
 // ======================================================================
@@ -425,6 +482,23 @@ template <class Scalar>
 AdaptiveBDF2Solver<Scalar>::AdaptiveBDF2Solver(Scalar newton_tol, int max_iter)
     : newton_tol_(newton_tol), max_iter_(max_iter) {}
 
+template<typename Scalar>
+State<Scalar> damped_newton_step(const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>& J,
+                                  const State<Scalar>& F,
+                                  const State<Scalar>& y,
+                                  Scalar lambda_min = 0.1) {
+    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
+    State<Scalar> delta = lu.solve(-F);
+
+    // 阻尼：限制最大更新幅度
+    Scalar max_delta = delta.cwiseAbs().maxCoeff();
+    if (max_delta > 1.0) {
+        delta *= (1.0 / max_delta);
+    }
+    return delta;
+}
+
+
 template<class Scalar>
 void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
                                Scalar t0, Scalar t1,
@@ -439,7 +513,7 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
     const Scalar fac_min = 0.2;
     const Scalar fac_max = 5.0;
     const Scalar h_min = 1e-12;
-    const int max_reject = 50;   // 最大连续拒绝次数，防死循环
+    const int max_reject = 50;
 
     Scalar h = std::min(h0, t1 - t0);
     if (h <= 0) return;
@@ -448,7 +522,7 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
     State<Scalar> y = y0;
     times.push_back(t); states.push_back(y);
 
-    // ========== 启动步：隐式 Euler ==========
+    // ========== 启动步：隐式 Euler，带阻尼 ==========
     const int n = y0.size();
     State<Scalar> y1 = y0;
     bool startup_ok = false;
@@ -467,8 +541,8 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
             State<Scalar> rm = ym - (y0 + h * f(t + h, ym));
             J.col(j) = (rp - rm) / (2 * eps);
         }
-        Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
-        y1 += lu.solve(-res);
+        State<Scalar> delta = damped_newton_step(J, res, y1);
+        y1 += delta;
     }
     if (!startup_ok) {
         std::cerr << "BDF2: startup step failed at t=" << t << std::endl;
@@ -484,10 +558,9 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
     Scalar t_nm1 = t0;
     Scalar t_n   = t1_bdf;
     Scalar h_old = h;
-    int n_reject = 0;   // 连续拒绝计数器
+    int n_reject = 0;
 
     while (t_n < t1 - 1e-12) {
-        // 计算实际尝试步长，限制不越界
         Scalar h_step = h;
         bool is_last_step = false;
         if (t_n + h_step > t1) {
@@ -499,17 +572,16 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
         Scalar ratio = (h_old > 0) ? (h_step / h_old) : 1.0;
         State<Scalar> y_pred = y_n + (y_n - y_nm1) * ratio;
 
-        // BDF2 校正
-        State<Scalar> y_np1 = abdf2_step(f, t_nm1, y_nm1, t_n, y_n, h_step);
+        // BDF2 校正，使用预测值作为初始猜测
+        State<Scalar> y_np1 = abdf2_step(f, t_nm1, y_nm1, t_n, y_n, h_step, y_pred);
         if (y_np1.size() == 0) {
-            // abdf2_step 内部牛顿不收敛
             h *= 0.5;
             if (h < h_min) {
                 std::cerr << "BDF2: step size too small at t=" << t_n << std::endl;
                 break;
             }
             h_old = h;
-            n_reject = 0;  // 重置拒绝计数（这是收敛失败不是误差过大）
+            n_reject = 0;
             continue;
         }
 
@@ -530,14 +602,13 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
             y_nm1 = y_n; y_n = y_np1;
             t_nm1 = t_n; t_n = t_np1;
             h_old = h_step;
-            n_reject = 0;  // 重置拒绝计数
+            n_reject = 0;
 
             if (t_n >= t1) break;
 
-            // 计算下一步的推荐步长
             Scalar fac = safety * std::pow(std::max(err_norm, Scalar(1e-10)), -0.5);
             fac = std::clamp(fac, fac_min, fac_max);
-            h = h_step * fac;   // 基于实际使用的 h_step 放大
+            h = h_step * fac;
         } else {
             // ========== 拒绝该步 ==========
             ++n_reject;
@@ -552,18 +623,10 @@ void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
             h = std::max(h_step * fac, h_min);
             h_old = h;
 
-            // 防死循环：如果已经是最小步长且还是失败，直接退出
             if (h <= h_min && h_step <= h_min) {
                 std::cerr << "BDF2: cannot reduce step further at t=" << t_n 
                           << ", h=h_min=" << h_min << std::endl;
                 break;
-            }
-
-            // 如果是最后一步（h_step 被强制设为 t1-t_n）且被拒绝，
-            // 需要确保 h 不会又被强制恢复
-            if (is_last_step) {
-                // 最后一步被拒绝：缩小 h 后继续尝试，但不再标记为最后一步
-                // h 已经被缩小，下一次循环 h_step = min(h, t1-t_n) 会自然处理
             }
         }
     }
@@ -573,32 +636,28 @@ template <class Scalar>
 State<Scalar>
 AdaptiveBDF2Solver<Scalar>::abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                               const State<Scalar> &y_n, Scalar t_n1,
-                              const State<Scalar> &y_n1, Scalar h) {
+                              const State<Scalar> &y_n1, Scalar h,
+                              const State<Scalar>& y_init) {
   Scalar t_n2 = t_n1 + h;
   int n = y_n.size();
-  State<Scalar> y = y_n1;
+  State<Scalar> y = (y_init.size() > 0) ? y_init : y_n1;  // 使用传入的初始猜测，或回退到 y_n1
 
   for (int iter = 0; iter < max_iter_; ++iter) {
     State<Scalar> F = y - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y));
     if (F.norm() < newton_tol_) return y;
 
-
-
     Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
     for (int j = 0; j < n; ++j) {
-      Scalar eps = this->__eps_policy(y, j, F.norm());  // 用策略！
+      Scalar eps = this->__eps_policy(y, j, F.norm());
       State<Scalar> y_plus = y, y_minus = y;
       y_plus(j) += eps; y_minus(j) -= eps;
-
-
 
       State<Scalar> F_plus = y_plus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_plus));
       State<Scalar> F_minus = y_minus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_minus));
       J.col(j) = (F_plus - F_minus) / (2.0 * eps);
     }
 
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
-    State<Scalar> delta = lu.solve(-F);
+    State<Scalar> delta = damped_newton_step(J, F, y);
     if (delta.array().isNaN().any()) {
         std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
         return State<Scalar>();

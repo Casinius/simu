@@ -167,6 +167,7 @@ private:
 
   Scalar newton_tol_;
   int max_iter_;
+  Scalar prev_res_norm;
 };
 
 template <typename Scalar> class IRK2Solver : public ODESolver<Scalar> {
@@ -215,12 +216,15 @@ private:
   // 单步 BDF2：已知 y_{n}, y_{n+1} 和步长 h，求 y_{n+2}
   State<Scalar> abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                           const State<Scalar> &y_n, Scalar t_n1,
-                          const State<Scalar> &y_n1, Scalar h);
+                          const State<Scalar> &y_n1, Scalar h,
+                          const State<Scalar> &y_init = State<Scalar>());
 
   Scalar newton_tol_;
   int max_iter_;
-  Scalar prev_res_norm;
 };
+
+
+
 
 
 

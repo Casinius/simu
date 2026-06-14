@@ -93,6 +93,7 @@ int main() {
 
   
   AdaptiveBDF2Solver<Scalar> ors(1e-10, 30);
+  ors.__eps_policy= eps_policy::central_diff_optimal<Scalar>();
   times.clear();
   states.clear();
   std::chrono::high_resolution_clock::time_point bdf_s = std::chrono::high_resolution_clock::now();
