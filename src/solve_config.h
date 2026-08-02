@@ -6,4 +6,4 @@ using Scalar = double;
 template class RK45Solver<Scalar>;
 template class BDF2Solver<Scalar>;
 template class IRK2Solver<Scalar>;
-template class AdaptiveBDF2Solver<Scalar>;
+template class SemiImplicitEulerSolver<Scalar>;

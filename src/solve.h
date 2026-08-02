@@ -164,6 +164,10 @@ private:
   State<Scalar> bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                           const State<Scalar> &y_n, Scalar t_n1,
                           const State<Scalar> &y_n1, Scalar h);
+  State<Scalar> dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
+                          const State<Scalar> &y_n, Scalar t_n1,
+                          const State<Scalar> &y_n1, Scalar h);
+                  
 
   Scalar newton_tol_;
   int max_iter_;
@@ -202,37 +206,28 @@ private:
 
 
 
-
-
-template <typename Scalar> class AdaptiveBDF2Solver : public ODESolver<Scalar> {
+// ----------------------------------------------------------------------
+// 半隐式 Euler（隐式 Euler，牛顿迭代 + 数值 Jacobian）
+// ----------------------------------------------------------------------
+template <typename Scalar> class SemiImplicitEulerSolver : public ODESolver<Scalar> {
 public:
-  explicit AdaptiveBDF2Solver(Scalar newton_tol = 1e-10, int max_iter = 30);
+  explicit SemiImplicitEulerSolver(Scalar newton_tol = 1e-10, int max_iter = 30);
 
   void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
              const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
              std::vector<State<Scalar>> &states) override;
 
 private:
-  // 单步 BDF2：已知 y_{n}, y_{n+1} 和步长 h，求 y_{n+2}
-  State<Scalar> abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
-                          const State<Scalar> &y_n, Scalar t_n1,
-                          const State<Scalar> &y_n1, Scalar h,
-                          const State<Scalar> &y_init = State<Scalar>());
-
+  State<Scalar> implicit_euler_step(const RHSFunc<Scalar> &f, Scalar t,
+                                    Scalar h, const State<Scalar> &y_curr);
   Scalar newton_tol_;
   int max_iter_;
 };
 
 
+template<typename Scalar> class VerletSolver : public ODESolver<Scalar>{
 
-
-
-
-
-
-
-
-
+};
 
 
 

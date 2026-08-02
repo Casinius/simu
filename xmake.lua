@@ -9,9 +9,11 @@ target("simu_gd")
     set_kind("binary")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
+    add_cxflags("-fsanitize=undefined")
+    add_ldflags("-fsanitize=undefined")
     add_packages("eigen","units","fpm")
     add_packages("boost")
-
+    
     if is_plat("linux") then
         add_syslinks("pthread", "dl")
     end

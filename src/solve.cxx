@@ -208,7 +208,7 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
       break;
     } else {
       // 标准 BDF2 步
-      State<Scalar> y_n2 = bdf2_step(f, t_n, y_n, t_n1, y_n1, h);
+      State<Scalar> y_n2 = dyn_eps_bdf2_step(f, t_n, y_n, t_n1, y_n1, h);
       if (y_n2.size() == 0)
         break;
       times.push_back(t_n2);
@@ -268,11 +268,10 @@ BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
   return State<Scalar>(); // 返回空向量表示失败
 }
 
-
-/*
+// 带复用和残差收敛慢hint的 ，但是在少量数据下由于要复制性能不如自动向量化重新计算;
 template <class Scalar>
 State<Scalar>
-BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
+BDF2Solver<Scalar>::dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                                        const State<Scalar> &y_n, Scalar t_n1,
                                        const State<Scalar> &y_n1, Scalar h) {
     Scalar t_n2 = t_n1 + h;
@@ -323,7 +322,6 @@ BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
     return State<Scalar>();
 }
 
-*/
 // ======================================================================
 // IRK2 实现 (二阶隐式 Runge‑Kutta)
 // ======================================================================
@@ -473,198 +471,71 @@ const Scalar eps = Scalar(1e-8);   // 固定绝对扰动，适应跨尺度
   return {State<Scalar>(), 0, h};
 }
 
-//=========================================================
 
-//             自适应BDF2求解
 
-//==========================================================
-template <class Scalar>
-AdaptiveBDF2Solver<Scalar>::AdaptiveBDF2Solver(Scalar newton_tol, int max_iter)
+// ======================================================================
+// 半隐式 Euler（隐式 Euler）实现
+// ======================================================================
+template<class Scalar>
+SemiImplicitEulerSolver<Scalar>::SemiImplicitEulerSolver(Scalar newton_tol, int max_iter)
     : newton_tol_(newton_tol), max_iter_(max_iter) {}
 
-template<typename Scalar>
-State<Scalar> damped_newton_step(const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>& J,
-                                  const State<Scalar>& F,
-                                  const State<Scalar>& y,
-                                  Scalar lambda_min = 0.1) {
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu(J);
-    State<Scalar> delta = lu.solve(-F);
-
-    // 阻尼：限制最大更新幅度
-    Scalar max_delta = delta.cwiseAbs().maxCoeff();
-    if (max_delta > 1.0) {
-        delta *= (1.0 / max_delta);
-    }
-    return delta;
-}
-
-
 template<class Scalar>
-void AdaptiveBDF2Solver<Scalar>::solve(const RHSFunc<Scalar>& f,
-                               Scalar t0, Scalar t1,
-                               const State<Scalar>& y0, Scalar h0,
-                               std::vector<Scalar>& times,
-                               std::vector<State<Scalar>>& states) {
-    times.clear(); states.clear();
-
-    const Scalar atol = 1e-6;
-    const Scalar rtol = 1e-4;
-    const Scalar safety = 0.9;
-    const Scalar fac_min = 0.2;
-    const Scalar fac_max = 5.0;
-    const Scalar h_min = 1e-12;
-    const int max_reject = 50;
-
-    Scalar h = std::min(h0, t1 - t0);
-    if (h <= 0) return;
+void SemiImplicitEulerSolver<Scalar>::solve(const RHSFunc<Scalar>& f,
+                                            Scalar t0, Scalar t1,
+                                            const State<Scalar>& y0, Scalar h0,
+                                            std::vector<Scalar>& times,
+                                            std::vector<State<Scalar>>& states) {
+    times.clear();
+    states.clear();
 
     Scalar t = t0;
     State<Scalar> y = y0;
-    times.push_back(t); states.push_back(y);
+    Scalar h = h0;          // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+    times.push_back(t);
+    states.push_back(y);
 
-    // ========== 启动步：隐式 Euler，带阻尼 ==========
-    const int n = y0.size();
-    State<Scalar> y1 = y0;
-    bool startup_ok = false;
-    for (int iter = 0; iter < max_iter_; ++iter) {
-        State<Scalar> res = y1 - (y0 + h * f(t + h, y1));
-        if (res.norm() < newton_tol_) {
-            startup_ok = true;
-            break;
-        }
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-        for (int j = 0; j < n; ++j) {
-            Scalar eps = this->__eps_policy(y1, j, res.norm());
-            State<Scalar> yp = y1, ym = y1;
-            yp(j) += eps; ym(j) -= eps;
-            State<Scalar> rp = yp - (y0 + h * f(t + h, yp));
-            State<Scalar> rm = ym - (y0 + h * f(t + h, ym));
-            J.col(j) = (rp - rm) / (2 * eps);
-        }
-        State<Scalar> delta = damped_newton_step(J, res, y1);
-        y1 += delta;
-    }
-    if (!startup_ok) {
-        std::cerr << "BDF2: startup step failed at t=" << t << std::endl;
-        return;
-    }
-
-    Scalar t1_bdf = t + h;
-    times.push_back(t1_bdf); states.push_back(y1);
-
-    // ========== 自适应 BDF2 步进 ==========
-    State<Scalar> y_nm1 = y;
-    State<Scalar> y_n   = y1;
-    Scalar t_nm1 = t0;
-    Scalar t_n   = t1_bdf;
-    Scalar h_old = h;
-    int n_reject = 0;
-
-    while (t_n < t1 - 1e-12) {
-        Scalar h_step = h;
-        bool is_last_step = false;
-        if (t_n + h_step > t1) {
-            h_step = t1 - t_n;
-            is_last_step = true;
-        }
-
-        // 预测：线性外推
-        Scalar ratio = (h_old > 0) ? (h_step / h_old) : 1.0;
-        State<Scalar> y_pred = y_n + (y_n - y_nm1) * ratio;
-
-        // BDF2 校正，使用预测值作为初始猜测
-        State<Scalar> y_np1 = abdf2_step(f, t_nm1, y_nm1, t_n, y_n, h_step, y_pred);
-        if (y_np1.size() == 0) {
-            h *= 0.5;
-            if (h < h_min) {
-                std::cerr << "BDF2: step size too small at t=" << t_n << std::endl;
-                break;
-            }
-            h_old = h;
-            n_reject = 0;
-            continue;
-        }
-
-        // 误差估计
-        State<Scalar> diff = y_np1 - y_pred;
-        Scalar err_norm = 0.0;
-        for (int i = 0; i < n; ++i) {
-            Scalar scale = atol + rtol * std::max(std::abs(y_n(i)), std::abs(y_np1(i)));
-            err_norm = std::max(err_norm, std::abs(diff(i)) / scale);
-        }
-
-        if (err_norm <= 1.0) {
-            // ========== 接受该步 ==========
-            Scalar t_np1 = t_n + h_step;
-            times.push_back(t_np1);
-            states.push_back(y_np1);
-
-            y_nm1 = y_n; y_n = y_np1;
-            t_nm1 = t_n; t_n = t_np1;
-            h_old = h_step;
-            n_reject = 0;
-
-            if (t_n >= t1) break;
-
-            Scalar fac = safety * std::pow(std::max(err_norm, Scalar(1e-10)), -0.5);
-            fac = std::clamp(fac, fac_min, fac_max);
-            h = h_step * fac;
-        } else {
-            // ========== 拒绝该步 ==========
-            ++n_reject;
-            if (n_reject > max_reject) {
-                std::cerr << "BDF2: too many rejections at t=" << t_n 
-                          << ", err_norm=" << err_norm << std::endl;
-                break;
-            }
-
-            Scalar fac = safety * std::pow(std::max(err_norm, Scalar(1e-10)), -0.5);
-            fac = std::clamp(fac, fac_min, Scalar(0.9));
-            h = std::max(h_step * fac, h_min);
-            h_old = h;
-
-            if (h <= h_min && h_step <= h_min) {
-                std::cerr << "BDF2: cannot reduce step further at t=" << t_n 
-                          << ", h=h_min=" << h_min << std::endl;
-                break;
-            }
-        }
+    while (t < t1) {
+        if (t + h > t1) h = t1 - t;
+        State<Scalar> y_next = implicit_euler_step(f, t, h, y);
+        t += h;
+        y = std::move(y_next);
+        times.push_back(t);
+        states.push_back(y);
     }
 }
 
-template <class Scalar>
-State<Scalar>
-AdaptiveBDF2Solver<Scalar>::abdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
-                              const State<Scalar> &y_n, Scalar t_n1,
-                              const State<Scalar> &y_n1, Scalar h,
-                              const State<Scalar>& y_init) {
-  Scalar t_n2 = t_n1 + h;
-  int n = y_n.size();
-  State<Scalar> y = (y_init.size() > 0) ? y_init : y_n1;  // 使用传入的初始猜测，或回退到 y_n1
+template<class Scalar>
+State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(const RHSFunc<Scalar>& f,
+                                                                    Scalar t, Scalar h,
+                                                                    const State<Scalar>& y_curr) {
+    int n = y_curr.size();
+    State<Scalar> y = y_curr;   // 初始猜测
 
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    State<Scalar> F = y - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y));
-    if (F.norm() < newton_tol_) return y;
+    // 隐式方程: y = y_curr + h * f(t+h, y)
+    for (int iter = 0; iter < max_iter_; ++iter) {
+        State<Scalar> F = y - y_curr - h * f(t + h, y);
+        if (F.norm() < newton_tol_) {
+            return y;
+        }
 
-    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-    for (int j = 0; j < n; ++j) {
-      Scalar eps = this->__eps_policy(y, j, F.norm());
-      State<Scalar> y_plus = y, y_minus = y;
-      y_plus(j) += eps; y_minus(j) -= eps;
+        // 数值 Jacobian
+        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+        Scalar eps = 1e-8;
+        for (int j = 0; j < n; ++j) {
+            State<Scalar> y_plus = y, y_minus = y;
+            y_plus(j) += eps;
+            y_minus(j) -= eps;
+            State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
+            State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
+            J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+        }
 
-      State<Scalar> F_plus = y_plus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_plus));
-      State<Scalar> F_minus = y_minus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y_minus));
-      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+        Eigen::PartialPivLU<decltype(J)> lu(J);
+        State<Scalar> delta = lu.solve(-F);
+        y += delta;
     }
 
-    State<Scalar> delta = damped_newton_step(J, F, y);
-    if (delta.array().isNaN().any()) {
-        std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
-        return State<Scalar>();
-    }
-    y += delta;
-  }
-
-  std::cerr << "BDF2: Newton did not converge at t=" << t_n2 << std::endl;
-  return State<Scalar>();
+    std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = " << t + h << std::endl;
+    return State<Scalar>();   // 失败返回空向量
 }
