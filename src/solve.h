@@ -86,7 +86,7 @@ EpsPolicy<Scalar> bounded_relative(const std::vector<Scalar>& typical_scales,
     };
 }
 
-} 
+}
 
 
 
@@ -97,7 +97,7 @@ using RHSFunc = std::function<State<Scalar>(
     Scalar, const State<Scalar> &)>; // dy/dt = f(t,y)
 
 template <typename Scalar> class ODESolver {
-    
+
     public:
   // 状态向量类型
 EpsPolicy<Scalar> __eps_policy= eps_policy::relative<Scalar>();
@@ -167,7 +167,7 @@ private:
   State<Scalar> dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                           const State<Scalar> &y_n, Scalar t_n1,
                           const State<Scalar> &y_n1, Scalar h);
-                  
+
 
   Scalar newton_tol_;
   int max_iter_;
@@ -226,13 +226,20 @@ private:
 
 
 template<typename Scalar> class VerletSolver : public ODESolver<Scalar>{
+    public:
+      explicit VerletSolver(Scalar newton_tol = 1e-10, int max_iter = 30);
 
+      void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
+                 const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
+                 std::vector<State<Scalar>> &states) override;
+      private:
+      State<Scalar> verlet_step(const RHSFunc<Scalar> &f, Scalar t,
+                                        Scalar h, const State<Scalar> &y_curr);
+      Scalar newton_tol_;
+      int max_iter_;
 };
 
 
 
 
 #endif // ODE_SOLVER_H
-
-
-

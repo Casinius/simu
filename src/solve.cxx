@@ -1,11 +1,14 @@
 // ODESolver.cpp
 #include "solve.h"
+
 // #include "solve_config.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 
+#include <print>
 #include <ratio>
+#include <stdexcept>
 #pragma once
 // ======================================================================
 // RK45 实现
@@ -268,58 +271,60 @@ BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
   return State<Scalar>(); // 返回空向量表示失败
 }
 
-// 带复用和残差收敛慢hint的 ，但是在少量数据下由于要复制性能不如自动向量化重新计算;
+// 带复用和残差收敛慢hint的
+// ，但是在少量数据下由于要复制性能不如自动向量化重新计算;
 template <class Scalar>
 State<Scalar>
 BDF2Solver<Scalar>::dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
-                                       const State<Scalar> &y_n, Scalar t_n1,
-                                       const State<Scalar> &y_n1, Scalar h) {
-    Scalar t_n2 = t_n1 + h;
-    int n = y_n.size();
-    State<Scalar> y = y_n1;                 // 初始猜测
-    State<Scalar> F, delta;
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu;
-    bool jac_uptodate = false;
+                                      const State<Scalar> &y_n, Scalar t_n1,
+                                      const State<Scalar> &y_n1, Scalar h) {
+  Scalar t_n2 = t_n1 + h;
+  int n = y_n.size();
+  State<Scalar> y = y_n1; // 初始猜测
+  State<Scalar> F, delta;
+  Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu;
+  bool jac_uptodate = false;
 
-    for (int iter = 0; iter < max_iter_; ++iter) {
-        F = y - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n + (2.0/3.0) * h * f(t_n2, y));
-        Scalar res_norm = F.norm();
-        if (res_norm < newton_tol_) {
-            return y;
-        }
-
-        // 仅在第一次迭代或雅可比需要更新时计算
-        if (!jac_uptodate) {
-            Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-            for (int j = 0; j < n; ++j) {
-                Scalar eps = this->__eps_policy(y, j, res_norm);
-                State<Scalar> y_plus = y, y_minus = y;
-                y_plus(j) += eps; y_minus(j) -= eps;
-                State<Scalar> F_plus = y_plus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n +
-                                                 (2.0/3.0) * h * f(t_n2, y_plus));
-                State<Scalar> F_minus = y_minus - (4.0/3.0 * y_n1 - 1.0/3.0 * y_n +
-                                                   (2.0/3.0) * h * f(t_n2, y_minus));
-                J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-            }
-            lu.compute(J);
-            jac_uptodate = true;
-        }
-
-        delta = lu.solve(-F);
-        if (delta.array().isNaN().any()) {
-            std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
-            return State<Scalar>();
-        }
-        y += delta;
-
-        // 可选：检测收敛速度，若残差下降过慢则标记雅可比需更新
-        if (iter > 0 && res_norm > 0.5 * prev_res_norm) {
-            jac_uptodate = false;   // 下次迭代重新计算雅可比
-        }
-        prev_res_norm = res_norm;
+  for (int iter = 0; iter < max_iter_; ++iter) {
+    F = y - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n + (2.0 / 3.0) * h * f(t_n2, y));
+    Scalar res_norm = F.norm();
+    if (res_norm < newton_tol_) {
+      return y;
     }
-    std::cerr << "BDF2: Newton did not converge at t=" << t_n2 << std::endl;
-    return State<Scalar>();
+
+    // 仅在第一次迭代或雅可比需要更新时计算
+    if (!jac_uptodate) {
+      Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+      for (int j = 0; j < n; ++j) {
+        Scalar eps = this->__eps_policy(y, j, res_norm);
+        State<Scalar> y_plus = y, y_minus = y;
+        y_plus(j) += eps;
+        y_minus(j) -= eps;
+        State<Scalar> F_plus = y_plus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
+                                         (2.0 / 3.0) * h * f(t_n2, y_plus));
+        State<Scalar> F_minus = y_minus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
+                                           (2.0 / 3.0) * h * f(t_n2, y_minus));
+        J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+      }
+      lu.compute(J);
+      jac_uptodate = true;
+    }
+
+    delta = lu.solve(-F);
+    if (delta.array().isNaN().any()) {
+      std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
+      return State<Scalar>();
+    }
+    y += delta;
+
+    // 可选：检测收敛速度，若残差下降过慢则标记雅可比需更新
+    if (iter > 0 && res_norm > 0.5 * prev_res_norm) {
+      jac_uptodate = false; // 下次迭代重新计算雅可比
+    }
+    prev_res_norm = res_norm;
+  }
+  std::cerr << "BDF2: Newton did not converge at t=" << t_n2 << std::endl;
+  return State<Scalar>();
 }
 
 // ======================================================================
@@ -471,71 +476,146 @@ const Scalar eps = Scalar(1e-8);   // 固定绝对扰动，适应跨尺度
   return {State<Scalar>(), 0, h};
 }
 
-
-
 // ======================================================================
 // 半隐式 Euler（隐式 Euler）实现
 // ======================================================================
-template<class Scalar>
-SemiImplicitEulerSolver<Scalar>::SemiImplicitEulerSolver(Scalar newton_tol, int max_iter)
+template <class Scalar>
+SemiImplicitEulerSolver<Scalar>::SemiImplicitEulerSolver(Scalar newton_tol,
+                                                         int max_iter)
     : newton_tol_(newton_tol), max_iter_(max_iter) {}
 
-template<class Scalar>
-void SemiImplicitEulerSolver<Scalar>::solve(const RHSFunc<Scalar>& f,
-                                            Scalar t0, Scalar t1,
-                                            const State<Scalar>& y0, Scalar h0,
-                                            std::vector<Scalar>& times,
-                                            std::vector<State<Scalar>>& states) {
-    times.clear();
-    states.clear();
+template <class Scalar>
+void SemiImplicitEulerSolver<Scalar>::solve(
+    const RHSFunc<Scalar> &f, Scalar t0, Scalar t1, const State<Scalar> &y0,
+    Scalar h0, std::vector<Scalar> &times, std::vector<State<Scalar>> &states) {
+  times.clear();
+  states.clear();
 
-    Scalar t = t0;
-    State<Scalar> y = y0;
-    Scalar h = h0;          // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+  Scalar t = t0;
+  State<Scalar> y = y0;
+  Scalar h = h0; // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+  times.push_back(t);
+  states.push_back(y);
+
+  while (t < t1) {
+    if (t + h > t1)
+      h = t1 - t;
+    State<Scalar> y_next = implicit_euler_step(f, t, h, y);
+    t += h;
+    y = std::move(y_next);
     times.push_back(t);
     states.push_back(y);
-
-    while (t < t1) {
-        if (t + h > t1) h = t1 - t;
-        State<Scalar> y_next = implicit_euler_step(f, t, h, y);
-        t += h;
-        y = std::move(y_next);
-        times.push_back(t);
-        states.push_back(y);
-    }
+  }
 }
 
-template<class Scalar>
-State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(const RHSFunc<Scalar>& f,
-                                                                    Scalar t, Scalar h,
-                                                                    const State<Scalar>& y_curr) {
-    int n = y_curr.size();
-    State<Scalar> y = y_curr;   // 初始猜测
+template <class Scalar>
+State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(
+    const RHSFunc<Scalar> &f, Scalar t, Scalar h, const State<Scalar> &y_curr) {
+  int n = y_curr.size();
+  State<Scalar> y = y_curr; // 初始猜测
 
-    // 隐式方程: y = y_curr + h * f(t+h, y)
-    for (int iter = 0; iter < max_iter_; ++iter) {
-        State<Scalar> F = y - y_curr - h * f(t + h, y);
-        if (F.norm() < newton_tol_) {
-            return y;
-        }
-
-        // 数值 Jacobian
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-        Scalar eps = 1e-8;
-        for (int j = 0; j < n; ++j) {
-            State<Scalar> y_plus = y, y_minus = y;
-            y_plus(j) += eps;
-            y_minus(j) -= eps;
-            State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
-            State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
-            J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-        }
-
-        Eigen::PartialPivLU<decltype(J)> lu(J);
-        State<Scalar> delta = lu.solve(-F);
-        y += delta;
+  // 隐式方程: y = y_curr + h * f(t+h, y)
+  for (int iter = 0; iter < max_iter_; ++iter) {
+    State<Scalar> F = y - y_curr - h * f(t + h, y);
+    if (F.norm() < newton_tol_) {
+      return y;
     }
 
-    std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = " << t + h << std::endl;
-    return State<Scalar>();   // 失败返回空向量
+    // 数值 Jacobian
+    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+    Scalar eps = 1e-8;
+    for (int j = 0; j < n; ++j) {
+      State<Scalar> y_plus = y, y_minus = y;
+      y_plus(j) += eps;
+      y_minus(j) -= eps;
+      State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
+      State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
+      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+    }
+
+    Eigen::PartialPivLU<decltype(J)> lu(J);
+    State<Scalar> delta = lu.solve(-F);
+    y += delta;
+  }
+
+  std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = "
+            << t + h << std::endl;
+  return State<Scalar>(); // 失败返回空向量
+}
+
+template <class Scalar>
+VerletSolver<Scalar>::VerletSolver(Scalar newton_tol, int max_iter)
+    : newton_tol_(newton_tol), max_iter_(max_iter) {}
+
+template <class Scalar>
+void VerletSolver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
+                                 const State<Scalar> &y0, Scalar h0,
+                                 std::vector<Scalar> &times,
+                                 std::vector<State<Scalar>> &states) {
+  times.clear();
+  states.clear();
+
+  Scalar t = t0;
+  State<Scalar> y = y0;
+  Scalar h = h0; // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+  times.push_back(t);
+  states.push_back(y);
+
+  while (t < t1) {
+    if (t + h > t1)
+      h = t1 - t;
+    State<Scalar> y_next = verlet_step(f, t, h, y);
+    t += h;
+    y = std::move(y_next);
+    times.push_back(t);
+    states.push_back(y);
+  }
+}
+
+
+
+template <class Scalar>
+State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
+                                                Scalar t, Scalar h,
+                                                const State<Scalar> &y_curr) {
+    if(y_curr.size() % 2 != 0){
+        std::println("State size must be even for Verlet!");
+        throw std::invalid_argument(0);
+    }
+    // y_curr 应包含 [位置, 速度]（对于二维系统，y[0]=x, y[1]=v）
+    // 此处假设 y_curr 是 2N 维向量，前半部分为位置，后半部分为速度
+    int n = y_curr.size() / 2;  // 质点数量（如果是单质点，n=1）
+
+    State<Scalar> y_new(y_curr.size());
+
+    // 1. 拆解状态
+    State<Scalar> x = y_curr.head(n);   // 当前位置
+    State<Scalar> v = y_curr.tail(n);   // 当前速度
+
+    // 2. 计算当前加速度 a(t) = f(t, y_curr) 的后半部分（速度导数）
+    //    注意：f 返回整个导数向量 [dx/dt, dv/dt]，我们只需要 dv/dt
+    State<Scalar> f_curr = f(t, y_curr);
+    State<Scalar> a_curr = f_curr.tail(n);  // 加速度
+
+    // 3. 更新位置（显式，使用当前加速度）
+    State<Scalar> x_new = x + v * h + 0.5 * a_curr * h * h;
+
+    // 4. 构造新状态用于计算新加速度（位置已更新，速度暂用旧速度）
+    State<Scalar> y_mid(y_curr.size());
+    y_mid.head(n) = x_new;
+    y_mid.tail(n) = v;  // 速度尚未更新，但计算加速度通常只依赖位置
+    // 如果您的力也依赖速度，则这里需采用更复杂的变体（如速度 Verlet 的显式速度步骤）
+    // 对于多数物理系统（如弹簧、重力），加速度只依赖位置，所以用旧速度没问题。
+
+    State<Scalar> f_new = f(t + h, y_mid);
+    State<Scalar> a_new = f_new.tail(n);
+
+    // 5. 更新速度（使用平均加速度）
+    State<Scalar> v_new = v + 0.5 * (a_curr + a_new) * h;
+
+    // 6. 组装新状态
+    y_new.head(n) = x_new;
+    y_new.tail(n) = v_new;
+
+    return y_new;
 }

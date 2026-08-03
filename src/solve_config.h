@@ -1,6 +1,5 @@
 #include "solve.h"
 #include "solve.cxx"
-#include "boost/math/cstdfloat/cstdfloat_types.hpp"
 #pragma once
 using Scalar = double;
 template class RK45Solver<Scalar>;
