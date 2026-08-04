@@ -220,6 +220,8 @@ public:
 private:
   State<Scalar> implicit_euler_step(const RHSFunc<Scalar> &f, Scalar t,
                                     Scalar h, const State<Scalar> &y_curr);
+  State<Scalar> implicit_euler_dynstep(const RHSFunc<Scalar> &f, Scalar t,
+                                    Scalar h, const State<Scalar> &y_curr);                                  
   Scalar newton_tol_;
   int max_iter_;
 };

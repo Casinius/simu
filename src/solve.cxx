@@ -500,7 +500,15 @@ void SemiImplicitEulerSolver<Scalar>::solve(
   while (t < t1) {
     if (t + h > t1)
       h = t1 - t;
-    State<Scalar> y_next = implicit_euler_step(f, t, h, y);
+    State<Scalar> y_next = implicit_euler_dynstep(f, t, h, y);
+    if (y_next.size() == 0) {
+      h *= 0.5;        // 减半步长
+      if (h < 1e-12) { // 防止死循环
+        std::cerr << "Step size too small, aborting.\n";
+        break;
+      }
+      continue; // 重新尝试当前步
+    }
     t += h;
     y = std::move(y_next);
     times.push_back(t);
@@ -525,6 +533,42 @@ State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(
     Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
     Scalar eps = 1e-8;
     for (int j = 0; j < n; ++j) {
+      State<Scalar> y_plus = y, y_minus = y;
+      y_plus(j) += eps;
+      y_minus(j) -= eps;
+      State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
+      State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
+      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
+    }
+
+    Eigen::PartialPivLU<decltype(J)> lu(J);
+    State<Scalar> delta = lu.solve(-F);
+    y += delta;
+  }
+
+  std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = "
+            << t + h << std::endl;
+  return State<Scalar>(); // 失败返回空向量
+}
+
+template <class Scalar>
+State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_dynstep(
+    const RHSFunc<Scalar> &f, Scalar t, Scalar h, const State<Scalar> &y_curr) {
+  int n = y_curr.size();
+  State<Scalar> y = y_curr; // 初始猜测
+
+  // 隐式方程: y = y_curr + h * f(t+h, y)
+  for (int iter = 0; iter < max_iter_; ++iter) {
+    State<Scalar> F = y - y_curr - h * f(t + h, y);
+    if (F.norm() < newton_tol_) {
+      return y;
+    }
+
+    // 数值 Jacobian
+    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+
+    for (int j = 0; j < n; ++j) {
+      Scalar eps = this->__eps_policy(y, j, F.norm());
       State<Scalar> y_plus = y, y_minus = y;
       y_plus(j) += eps;
       y_minus(j) -= eps;
@@ -572,50 +616,48 @@ void VerletSolver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   }
 }
 
-
-
 template <class Scalar>
 State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
                                                 Scalar t, Scalar h,
                                                 const State<Scalar> &y_curr) {
-    if(y_curr.size() % 2 != 0){
-        throw std::invalid_argument("State size must be even for Verlet");
-    }
-    // y_curr 应包含 [位置, 速度]（对于二维系统，y[0]=x, y[1]=v）
-    // 此处假设 y_curr 是 2N 维向量，前半部分为位置，后半部分为速度
-    int n = y_curr.size() / 2;  // 质点数量（如果是单质点，n=1）
+  if (y_curr.size() % 2 != 0) {
+    throw std::invalid_argument("State size must be even for Verlet");
+  }
+  // y_curr 应包含 [位置, 速度]（对于二维系统，y[0]=x, y[1]=v）
+  // 此处假设 y_curr 是 2N 维向量，前半部分为位置，后半部分为速度
+  int n = y_curr.size() / 2; // 质点数量（如果是单质点，n=1）
 
-    State<Scalar> y_new(y_curr.size());
+  State<Scalar> y_new(y_curr.size());
 
-    // 1. 拆解状态
-    State<Scalar> x = y_curr.head(n);   // 当前位置
-    State<Scalar> v = y_curr.tail(n);   // 当前速度
+  // 1. 拆解状态
+  State<Scalar> x = y_curr.head(n); // 当前位置
+  State<Scalar> v = y_curr.tail(n); // 当前速度
 
-    // 2. 计算当前加速度 a(t) = f(t, y_curr) 的后半部分（速度导数）
-    //    注意：f 返回整个导数向量 [dx/dt, dv/dt]，我们只需要 dv/dt
-    State<Scalar> f_curr = f(t, y_curr);
-    State<Scalar> a_curr = f_curr.tail(n);  // 加速度
+  // 2. 计算当前加速度 a(t) = f(t, y_curr) 的后半部分（速度导数）
+  //    注意：f 返回整个导数向量 [dx/dt, dv/dt]，我们只需要 dv/dt
+  State<Scalar> f_curr = f(t, y_curr);
+  State<Scalar> a_curr = f_curr.tail(n); // 加速度
 
-    // 3. 更新位置（显式，使用当前加速度）
-    State<Scalar> x_new = x + v * h + 0.5 * a_curr * h * h;
+  // 3. 更新位置（显式，使用当前加速度）
+  State<Scalar> x_new = x + v * h + 0.5 * a_curr * h * h;
 
-    // 4. 构造新状态用于计算新加速度（位置已更新，速度使用半步更新的方法）
-    State<Scalar> y_mid(y_curr.size());
-    y_mid.head(n) = x_new;
+  // 4. 构造新状态用于计算新加速度（位置已更新，速度使用半步更新的方法）
+  State<Scalar> y_mid(y_curr.size());
+  y_mid.head(n) = x_new;
 
-    State<Scalar> v_half = v+ 0.5 * a_curr *h;
+  State<Scalar> v_half = v + 0.5 * a_curr * h;
 
-    y_mid.tail(n) = v_half; 
+  y_mid.tail(n) = v_half;
 
-    State<Scalar> f_new = f(t + h, y_mid);
-    State<Scalar> a_new = f_new.tail(n);
+  State<Scalar> f_new = f(t + h, y_mid);
+  State<Scalar> a_new = f_new.tail(n);
 
-    // 5. 更新速度（使用基于半步更新的速度 计算 平均加速度）
-    State<Scalar> v_new = v_half + 0.5 * a_new * h;
+  // 5. 更新速度（使用基于半步更新的速度 计算 平均加速度）
+  State<Scalar> v_new = v_half + 0.5 * a_new * h;
 
-    // 6. 组装新状态
-    y_new.head(n) = x_new;
-    y_new.tail(n) = v_new;
+  // 6. 组装新状态
+  y_new.head(n) = x_new;
+  y_new.tail(n) = v_new;
 
-    return y_new;
+  return y_new;
 }
