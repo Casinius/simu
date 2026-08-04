@@ -1,6 +1,8 @@
 
 // #include "solve_config.h"
+#include "Eigen/Core"
 #include "solve.h"
+#include "solve_config.h"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -46,6 +48,63 @@ template <class Scalar> struct Constraint {
   Scalar compliance; // 柔度 (0 = 完全刚性)
   Scalar lambda;     // 拉格朗日乘子（累计值，每帧需要持久化）
 };
+
+template <class Scalar>
+void integrate_symlect_euler(std::vector<Particle<Scalar>> &particles,
+                             const Eigen::Vector3d &accelerate, Scalar dt) {
+  for (auto &p : particles) {
+    if (p.invMass == 0.0)
+      continue;
+    p.v += accelerate * dt;
+    p.x += p.v * dt;
+  }
+}
+
+template <class Scalar>
+void integrate_verlet(std::vector<Particle<Scalar>> &particles,
+                      const Eigen::Vector3d &accelerate, Scalar dt) {
+  for (auto &p : particles) {
+    if (p.invMass == 0.0)
+      continue;
+    Eigen::Vector3d accel = accelerate;
+    Eigen::Vector3f new_x = p.x + (p.x - p.x_prev) + accel * dt * dt;
+    p.x_prev = p.x;
+    p.x = new_x;
+  }
+}
+namespace SoA {
+template <class Scalar> struct ParticlesSoA {
+  std::vector<Scalar> x;
+  std::vector<Scalar> y;
+  std::vector<Scalar> z;
+  std::vector<Scalar> invMass;
+};
+
+template <class Scalar>
+void soa_integrate_symlect_euler(ParticlesSoA<Scalar> &particles,
+                                 const Eigen::Vector3d &accelerate, Scalar dt) {
+  for (auto &p : particles) {
+    if (p.invMass == 0.0)
+      continue;
+    p.v += accelerate * dt;
+    p.x += p.v * dt;
+  }
+}
+
+template <class Scalar>
+void soa_integrate_verlet(ParticlesSoA<Scalar> &particles,
+                          const Eigen::Vector3d &accelerate, Scalar dt) {
+  for (auto &p : particles) {
+    if (p.invMass == 0.0)
+      continue;
+    Eigen::Vector3d accel = accelerate;
+    Eigen::Vector3f new_x = p.x + (p.x - p.x_prev) + accel * dt * dt;
+    p.x_prev = p.x;
+    p.x = new_x;
+  }
+}
+
+} // namespace SoA
 
 } // namespace xpbd
 #endif
