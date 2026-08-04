@@ -579,8 +579,7 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
                                                 Scalar t, Scalar h,
                                                 const State<Scalar> &y_curr) {
     if(y_curr.size() % 2 != 0){
-        std::println("State size must be even for Verlet!");
-        throw std::invalid_argument(0);
+        throw std::invalid_argument("State size must be even for Verlet");
     }
     // y_curr 应包含 [位置, 速度]（对于二维系统，y[0]=x, y[1]=v）
     // 此处假设 y_curr 是 2N 维向量，前半部分为位置，后半部分为速度
@@ -600,18 +599,19 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
     // 3. 更新位置（显式，使用当前加速度）
     State<Scalar> x_new = x + v * h + 0.5 * a_curr * h * h;
 
-    // 4. 构造新状态用于计算新加速度（位置已更新，速度暂用旧速度）
+    // 4. 构造新状态用于计算新加速度（位置已更新，速度使用半步更新的方法）
     State<Scalar> y_mid(y_curr.size());
     y_mid.head(n) = x_new;
-    y_mid.tail(n) = v;  // 速度尚未更新，但计算加速度通常只依赖位置
-    // 如果您的力也依赖速度，则这里需采用更复杂的变体（如速度 Verlet 的显式速度步骤）
-    // 对于多数物理系统（如弹簧、重力），加速度只依赖位置，所以用旧速度没问题。
+
+    State<Scalar> v_half = v+ 0.5 * a_curr *h;
+
+    y_mid.tail(n) = v_half; 
 
     State<Scalar> f_new = f(t + h, y_mid);
     State<Scalar> a_new = f_new.tail(n);
 
-    // 5. 更新速度（使用平均加速度）
-    State<Scalar> v_new = v + 0.5 * (a_curr + a_new) * h;
+    // 5. 更新速度（使用基于半步更新的速度 计算 平均加速度）
+    State<Scalar> v_new = v_half + 0.5 * a_new * h;
 
     // 6. 组装新状态
     y_new.head(n) = x_new;
