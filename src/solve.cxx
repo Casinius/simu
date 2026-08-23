@@ -375,27 +375,21 @@ void IRK2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
 template <typename Scalar>
 typename IRK2Solver<Scalar>::StepResult
 IRK2Solver<Scalar>::step(const RHSFunc<Scalar> &f, Scalar t,
-                         const State<Scalar> &y, Scalar h) {
+                         const State<Scalar> &y, Scalar h,
+                         bool is_explicit_euler) {
   if (y.size() == 0 || !f) {
     return {State<Scalar>(), 0, h};
   }
 
   const int n = y.size();
   const Scalar c = 0.5, a = 0.5;
-
-  /*
-
-  // 使用零阶预测器（初值取当前状态），避免显式欧拉产生过大估计
   State<Scalar> y_next = y;
-  State<Scalar> delta(n), residual(n);
-  Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
+  if (is_explicit_euler) {
+    State<Scalar> y_next = y + h * f(t, y); // 显式 Euler 预测（比零阶好）
+  } else {
+    State<Scalar> y_next = y; // 零阶保持（ZOH）
+  }
 
-const Scalar eps = Scalar(1e-8);   // 固定绝对扰动，适应跨尺度
-
-
-  */
-
-  State<Scalar> y_next = y + h * f(t, y); // 显式 Euler 预测（比零阶好）
   State<Scalar> delta(n), residual(n);
   Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
 

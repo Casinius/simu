@@ -184,7 +184,7 @@ public:
   // enum class Method { Midpoint, Trapezoidal };
 
   explicit IRK2Solver(Method method = Method::Midpoint,
-                      Scalar newton_tol = 1e-10, int max_iter = 30);
+                      Scalar newton_tol = 1e-6, int max_iter = 30);
 
   void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
              const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
@@ -197,7 +197,7 @@ private:
     Scalar h_next;
   };
   StepResult step(const RHSFunc<Scalar> &f, Scalar t, const State<Scalar> &y,
-                  Scalar h);
+                  Scalar h,bool is_explicit_euler=false);
 
   Method method_;
   Scalar newton_tol_;
@@ -211,7 +211,7 @@ private:
 // ----------------------------------------------------------------------
 template <typename Scalar> class SemiImplicitEulerSolver : public ODESolver<Scalar> {
 public:
-  explicit SemiImplicitEulerSolver(Scalar newton_tol = 1e-10, int max_iter = 30);
+  explicit SemiImplicitEulerSolver(Scalar newton_tol = 1e-6, int max_iter = 30);
 
   void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
              const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
@@ -229,7 +229,7 @@ private:
 
 template<typename Scalar> class VerletSolver : public ODESolver<Scalar>{
     public:
-      explicit VerletSolver(Scalar newton_tol = 1e-10, int max_iter = 30);
+      explicit VerletSolver(Scalar newton_tol = 1e-6, int max_iter = 30);
 
       void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
                  const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
