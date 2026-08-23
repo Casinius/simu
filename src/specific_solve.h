@@ -124,7 +124,7 @@ brutal_constraint_graph(const std::vector<Constraint<Scalar, N>> cons) {
   return graph;
 }
 
-void greedy_coloring(ConstraintGraph &graph) {
+inline void greedy_coloring(ConstraintGraph &graph) {
   int n = graph.num_constraints;
   graph.colors.assign(n, -1);
   std::vector<bool> used_color(n, false);
@@ -147,19 +147,17 @@ void greedy_coloring(ConstraintGraph &graph) {
   }
 }
 
+inline std::vector<std::vector<index_t>> build_color_groups(const ConstraintGraph &graph) {
+  size_t num_colors = 0;
+  for (auto c : graph.colors)
+    num_colors = std::max(num_colors, c + 1);
 
-std::vector<std::vector<index_t>> buildColorGroups(const ConstraintGraph& graph) {
-    size_t num_colors = 0;
-    for (auto c : graph.colors) num_colors = std::max(num_colors, c + 1);
-    
-    std::vector<std::vector<index_t>> groups(num_colors);
-    for (auto i = 0; i < graph.num_constraints; ++i) {
-        groups[graph.colors[i]].push_back(i);
-    }
-    return groups;
+  std::vector<std::vector<index_t>> groups(num_colors);
+  for (auto i = 0; i < graph.num_constraints; ++i) {
+    groups[graph.colors[i]].push_back(i);
+  }
+  return groups;
 }
-
-
 
 namespace SoA {
 template <class Scalar> struct ParticlesSoA {
