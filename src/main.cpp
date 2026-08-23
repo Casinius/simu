@@ -59,10 +59,10 @@ int main(){
     // 初始条件
     State<Scalar> y0(2);
     y0 << 1.0, 0.0;   // Robertson标准初值
-    SemiImplicitEulerSolver<Scalar> solver;
+    IRK2Solver<Scalar> solver;
     Scalar t0 = 0.0;
-    Scalar t1 = 10.0;  // 仿真 10 秒
-    Scalar h0 = 1; // 初始步长 10ms
+    Scalar t1 = 2000.0;  // 仿真时间
+    Scalar h0 = 0.01; // 初始步长
 
     std::vector<Scalar> times;
     std::vector<State<Scalar>> states;
