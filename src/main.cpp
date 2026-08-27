@@ -55,7 +55,10 @@ Eigen::VectorX<Scalar> double_pendulum_rhs(Scalar t, const Eigen::VectorX<Scalar
     dydt << dtheta1, domega1, dtheta2, domega2;
     return dydt;
 }
+
 int main(){
+    
+
     // 初始条件
     State<Scalar> y0(2);
     y0 << 1.0, 0.0;   // Robertson标准初值
@@ -80,4 +83,7 @@ int main(){
             std::ofstream file("output.json");
             file << json_str;
             file.close();
+ //   std::println("{}",json_str);
+
 }
+
