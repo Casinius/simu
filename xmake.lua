@@ -3,13 +3,13 @@ add_rules("plugin.compile_commands.autoupdate", {outputdir = "."})
 set_languages("c++latest")
 
 set_policy("build.sanitizer.address", true)
-add_requires("eigen","taocpp-json")
+add_requires("eigen 5.0.1","taocpp-json 2025.03.11","autodiff")
 --add_requires("boost",{config = {cmake = false}})
 target("simu")
     set_kind("binary")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
-    add_packages("eigen","taocpp-json")
+    add_packages("eigen","taocpp-json","autodiff")
 
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
