@@ -207,7 +207,7 @@ void project_bend(
     project_xpbd_fd(func, x, masses, dofs, dt, compliance, lambda_out);
 }
 } // namespace ChebyCons
-/*
+
 namespace ChebyAutoDiff {
 
 template <class Scalar, class ConstraintFunc>
@@ -311,7 +311,7 @@ void project_attach(Eigen::VectorX<Scalar> &x,
 }
 
 } // namespace ChebyAutoDiff
-*/
+
 // 为了让代码干净，定义具体的物理精度类型（例如单精度实时）
 template <class Scalar> struct ConstraintRegistry {
   ChebyCons::DistanceConstraintData<Scalar> distances;
