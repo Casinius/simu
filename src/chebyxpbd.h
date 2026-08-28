@@ -293,7 +293,7 @@ inline void project_bend(Eigen::VectorX<Scalar> &x, // 所有粒子的位置 (3N
 }
 
 template <class Scalar>
-void project_attach(Eigen::VectorX<Scalar> &x,
+inline void project_attach(Eigen::VectorX<Scalar> &x,
                     const std::vector<Scalar> &masses, Scalar dt,
                     Scalar compliance, Scalar &lambda_out, size_t idx,
                     const Vec3<Scalar> &target) {
