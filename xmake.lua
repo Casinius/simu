@@ -4,12 +4,22 @@ set_languages("c++latest")
 
 set_policy("build.sanitizer.address", true)
 add_requires("eigen 5.0.1","taocpp-json 2025.03.11","kompute v0.9.0")
+-- build-time GLSL -> SPIR-V compiler for the GPU linear-algebra kernels
+add_requires("glslang", {configs = {binaryonly = true}})
 --add_requires("boost",{config = {cmake = false}})
 target("simu")
     set_kind("binary")
+    -- compile compute shaders to SPIR-V and embed them as C headers (bin2c).
+    -- must come before the C++ sources that #include the generated *.comp.spv.h files
+    add_rules("utils.glsl2spv", {bin2c = true, targetenv = "vulkan1.1"})
+    add_files("src/gpu/shaders/*.comp")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
-    add_packages("eigen","taocpp-json","kompute")
+    add_includedirs("src")
+    add_packages("eigen","taocpp-json","kompute","glslang")
+    -- libkompute.a references logger::setupLogger defined in libkp_logger.a:
+    -- with GNU ld the definition must come after the reference.
+    add_linkorders("kompute", "kp_logger")
 target_end()
 
 
@@ -25,9 +35,23 @@ package("kompute")
 
     add_deps("cmake", "vulkan-loader")
 
+    -- v0.9.0 splits the logger into a separate static library that the
+    -- main kompute archive references (logger::setupLogger). It must be
+    -- linked AFTER libkompute; the target enforces the order with
+    -- add_linkorders("kompute", "kp_logger").
+    add_links("kp_logger")
+
     on_install("windows|x86", "windows|x64", "linux", "macosx|!arm64", function (package)
         local configs = {}
-        table.insert(configs, "-DCMAKE_BUILD_TYPE=" .. (package:debug() and "Debug" or "Release"))
+        -- ABI pin: vk::DispatchLoaderBase (vulkan-hpp) carries a 16-byte
+        -- debug-only guard (vkHeaderVersion + m_valid) unless NDEBUG is
+        -- defined, so sizeof(kp::Manager) differs between NDEBUG and
+        -- non-NDEBUG TUs. The archive is therefore ALWAYS built with NDEBUG
+        -- (Release); consumers must see the same layout — gpu/Context.hpp
+        -- wraps #include <kompute/Kompute.hpp> in a pinned NDEBUG region.
+        -- A Debug archive + Release consumer makes libkompute's constructors
+        -- write past the consumer's allocation (ASan heap-buffer-overflow).
+        table.insert(configs, "-DCMAKE_BUILD_TYPE=Release")
         -- v0.9.0 removed KOMPUTE_OPT_REPO_SUBMODULE_BUILD and KOMPUTE_OPT_BUILD_AS_SHARED_LIB
         -- (both now trigger a fatal error in cmake/deprecation_warnings.cmake).
         -- Shared/static is controlled via BUILD_SHARED_LIBS, which xmake's cmake tool
@@ -40,6 +64,20 @@ package("kompute")
         import("package.tools.cmake").install(package, configs)
         -- headers, fmt and cmake config files are installed by KOMPUTE_OPT_INSTALL;
         -- the old manual os.cp("single_include"/"external/fmt/include") no longer exist in v0.9.0
+        --
+        -- ABI safety: v0.9.0 builds against its *vendored* Vulkan-Headers
+        -- (v1.3.231) when KOMPUTE_OPT_USE_BUILT_IN_VULKAN_HEADER is on
+        -- (default). vulkan-hpp layouts (e.g. DispatchLoaderDynamic) differ
+        -- between header versions, so consumers MUST see the same headers
+        -- the archive was built with. Ship them in the package include dir
+        -- (which xmake searches before /usr/include).
+        local builddir = package:buildir()
+        if builddir then
+            local vendored = path.join(builddir, "_deps", "vulkan_header-src", "include", "vulkan")
+            if os.isdir(vendored) then
+                os.cp(vendored, path.join(package:installdir(), "include"))
+            end
+        end
     end)
 
     on_test(function (package)

@@ -1,0 +1,4 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#define KP_F64 1
+#include "src/matmul.glsl"
