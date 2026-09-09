@@ -101,6 +101,14 @@ template <typename Scalar> class ODESolver {
     public:
   // 状态向量类型
 EpsPolicy<Scalar> __eps_policy= eps_policy::relative<Scalar>();
+  // 牛顿修正方程 J·delta = rhs 的线性求解策略。
+  // A  : J·v 矩阵自由算子；J : 已组装的 dense 雅可比（用户可用来建预条件子，可忽略）；
+  // rhs: 方程右端。返回解；返回 size()==0 表示失败。
+  using LinearSolveFn = std::function<State<Scalar>(
+      const std::function<State<Scalar>(const State<Scalar> &)> &,
+      const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> &,
+      const State<Scalar> &)>;
+  LinearSolveFn __linear_solve; // 默认空 → 走原有 PartialPivLU 路径
   virtual ~ODESolver() = default;
 
   /**

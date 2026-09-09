@@ -11,6 +11,28 @@
 #include <stdexcept>
 #pragma once
 // ======================================================================
+// 牛顿修正线性求解：注入策略 (__linear_solve) 或回退 PartialPivLU。
+// 返回 delta；失败（注入方报失败或出现 NaN）返回空向量。
+// ======================================================================
+template <class Scalar, class Mat>
+State<Scalar> solve_newton_correction(const ODESolver<Scalar> *solver,
+                                      const Mat &J, const State<Scalar> &rhs) {
+  if (solver->__linear_solve) {
+    auto A = [&J](const State<Scalar> &v) -> State<Scalar> {
+      return State<Scalar>(J * v);
+    };
+    State<Scalar> d = solver->__linear_solve(A, J, rhs);
+    if (d.size() != 0 && d.array().isNaN().any())
+      return State<Scalar>();
+    return d;
+  }
+  Eigen::PartialPivLU<Mat> lu(J);
+  State<Scalar> d = lu.solve(rhs);
+  if (d.array().isNaN().any())
+    return State<Scalar>();
+  return d;
+}
+// ======================================================================
 // RK45 实现
 // ======================================================================
 // Butcher 表系数 (Fehlberg 4(5))
@@ -167,9 +189,10 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
       State<Scalar> rm = ym - (y0 + h * f(t + h, ym));
       J.col(j) = (rp - rm) / (2 * eps);
     }
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-        lu(J);
-    y1 += lu.solve(-res);
+    State<Scalar> delta = solve_newton_correction<Scalar>(this, J, -res);
+    if (delta.size() == 0)
+      break;
+    y1 += delta;
   }
   Scalar t1_bdf = t + h;
   times.push_back(t1_bdf);
@@ -201,10 +224,10 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
           State<Scalar> rm = ym - (y_n1 + h * f(t_n2, ym));
           J.col(j) = (rp - rm) / (2 * eps);
         }
-        Eigen::PartialPivLU<
-            Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-            lu(J);
-        y_n2 += lu.solve(-res);
+        State<Scalar> delta = solve_newton_correction<Scalar>(this, J, -res);
+        if (delta.size() == 0)
+          break;
+        y_n2 += delta;
       }
       times.push_back(t_n2);
       states.push_back(y_n2);
@@ -261,8 +284,11 @@ BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
     }
 
     // 求解线性系统 J * delta = -F
-    Eigen::PartialPivLU<Eigen::MatrixXd> lu(J);
-    State<Scalar> delta = lu.solve(-F);
+    State<Scalar> delta = solve_newton_correction<Scalar>(this, J, -F);
+    if (delta.size() == 0) {
+      std::cerr << "BDF2: singular Jacobian at t = " << t_n2 << std::endl;
+      return State<Scalar>();
+    }
     y += delta;
   }
 
@@ -282,7 +308,6 @@ BDF2Solver<Scalar>::dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
   int n = y_n.size();
   State<Scalar> y = y_n1; // 初始猜测
   State<Scalar> F, delta;
-  Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu;
   bool jac_uptodate = false;
 
   for (int iter = 0; iter < max_iter_; ++iter) {
@@ -306,16 +331,14 @@ BDF2Solver<Scalar>::dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                                            (2.0 / 3.0) * h * f(t_n2, y_minus));
         J.col(j) = (F_plus - F_minus) / (2.0 * eps);
       }
-      lu.compute(J);
-      jac_uptodate = true;
-    }
-
-    delta = lu.solve(-F);
-    if (delta.array().isNaN().any()) {
-      std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
-      return State<Scalar>();
+      delta = solve_newton_correction<Scalar>(this, J, -F);
+      if (delta.size() == 0) {
+        std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
+        return State<Scalar>();
+      }
     }
     y += delta;
+
 
     // 可选：检测收敛速度，若残差下降过慢则标记雅可比需更新
     if (iter > 0 && res_norm > 0.5 * prev_res_norm) {
@@ -416,10 +439,8 @@ IRK2Solver<Scalar>::step(const RHSFunc<Scalar> &f, Scalar t,
       State<Scalar> res_minus = y_minus - (y + h * f(t_mid, y_mid_minus));
       J.col(j) = (res_plus - res_minus) / (2 * eps);
     }
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-        lu(J);
-    delta = lu.solve(-residual);
-    if (delta.array().isNaN().any()) {
+    delta = solve_newton_correction<Scalar>(this, J, -residual);
+    if (delta.size() == 0) {
       std::cerr << "IRK2: singular Jacobian at t=" << t << ", iter=" << iter
                 << std::endl;
       return {State<Scalar>(), 0, h};
@@ -535,8 +556,12 @@ State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(
       J.col(j) = (F_plus - F_minus) / (2.0 * eps);
     }
 
-    Eigen::PartialPivLU<decltype(J)> lu(J);
-    State<Scalar> delta = lu.solve(-F);
+    State<Scalar> delta = solve_newton_correction<Scalar>(this, J, -F);
+    if (delta.size() == 0) {
+      std::cerr << "SemiImplicitEuler: singular Jacobian at t = " << t + h
+                << std::endl;
+      return State<Scalar>();
+    }
     y += delta;
   }
 
@@ -571,8 +596,12 @@ State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_dynstep(
       J.col(j) = (F_plus - F_minus) / (2.0 * eps);
     }
 
-    Eigen::PartialPivLU<decltype(J)> lu(J);
-    State<Scalar> delta = lu.solve(-F);
+    State<Scalar> delta = solve_newton_correction<Scalar>(this, J, -F);
+    if (delta.size() == 0) {
+      std::cerr << "SemiImplicitEuler: singular Jacobian at t = " << t + h
+                << std::endl;
+      return State<Scalar>();
+    }
     y += delta;
   }
 

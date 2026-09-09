@@ -1,7 +1,7 @@
 // main_vehicle_example.cpp
 // 示例：使用 VehicleDynamics 与 ODESolver 进行车辆仿真
 
-#include "solve.h"
+#include "precond_krylov.h"
 #include "solve_config.h"
 #include <cstddef>
 #include <iostream>
@@ -55,8 +55,139 @@ Eigen::VectorX<Scalar> double_pendulum_rhs(Scalar t, const Eigen::VectorX<Scalar
     dydt << dtheta1, domega1, dtheta2, domega2;
     return dydt;
 }
+// ======================================================================
+// Krylov 框架自检 + ODE 求解器注入示例
+// ======================================================================
+static int krylov_selfcheck() {
+  using pk::Vector;
+  auto fail = [](const char *what) {
+    std::cerr << "krylov selfcheck: FAIL (" << what << ")" << std::endl;
+    std::exit(1);
+  };
+
+  // ---- 1. 合成 SPD 矩阵：PCG + 预条件对比 ----
+  const int n = 200;
+  Eigen::MatrixXd B = Eigen::MatrixXd::Random(n, n);
+  // 对角跨 3 个数量级：保证 jacobi/ssor 相对 plain 有明确收益
+  Eigen::VectorXd s(n);
+  for (int i = 0; i < n; ++i)
+    s(i) = std::pow(10.0, -3.0 * i / (n - 1));
+  Eigen::MatrixXd Asp =
+      s.asDiagonal() * (B.transpose() * B) * s.asDiagonal() +
+      Eigen::MatrixXd::Identity(n, n);
+  Vector<double> b = Vector<double>::Random(n);
+  auto Aop = [&](const Vector<double> &v) { return Vector<double>(Asp * v); };
+
+  Vector<double> x = Vector<double>::Zero(n);
+  auto r_plain = pk::pcg<double>(Aop, b, x);
+  if (!r_plain.converged || r_plain.relres > 1e-8)
+    fail("pcg plain SPD");
+
+  Vector<double> xj = Vector<double>::Zero(n);
+  auto r_jac = pk::pcg<double>(Aop, b, xj, pk::jacobi<double>(Asp));
+  if (!r_jac.converged || r_jac.relres > 1e-8)
+    fail("pcg jacobi SPD");
+
+  Vector<double> xs = Vector<double>::Zero(n);
+  auto r_ssor = pk::pcg<double>(Aop, b, xs, pk::ssor<double>(Asp));
+  if (!r_ssor.converged || r_ssor.relres > 1e-8)
+    fail("pcg ssor SPD");
+
+  std::cout << "pcg SPD iters: plain=" << r_plain.iterations
+            << " jacobi=" << r_jac.iterations
+            << " ssor=" << r_ssor.iterations << std::endl;
+  if (!(r_jac.iterations < r_plain.iterations &&
+        r_ssor.iterations < r_plain.iterations))
+    fail("preconditioners do not reduce iterations on SPD");
+
+  // ---- 2. 病态对角（跨 6 个数量级）：jacobi 必须显著优于无预条件 ----
+  Eigen::VectorXd d(n);
+  for (int i = 0; i < n; ++i)
+    d(i) = std::pow(10.0, -6.0 * i / (n - 1));
+  Eigen::MatrixXd Ddiag = d.asDiagonal();
+  auto Dop = [&](const Vector<double> &v) { return Vector<double>(Ddiag * v); };
+  pk::Params<double> wide;
+  wide.max_iter = 100000;
+  Vector<double> xi = Vector<double>::Zero(n);
+  auto r_ill_plain = pk::pcg<double>(Dop, b, xi, nullptr, wide);
+  Vector<double> xij = Vector<double>::Zero(n);
+  auto r_ill_jac = pk::pcg<double>(Dop, b, xij, pk::jacobi<double>(d), wide);
+  std::cout << "pcg ill-conditioned iters: plain=" << r_ill_plain.iterations
+            << " jacobi=" << r_ill_jac.iterations << std::endl;
+  if (!r_ill_jac.converged ||
+      r_ill_jac.iterations >= r_ill_plain.iterations)
+    fail("jacobi ineffective on ill-conditioned diagonal");
+
+  // ---- 3. 非对称对角占优：bicgstab + gmres ----
+  Eigen::MatrixXd C = Eigen::MatrixXd::Random(n, n) * 0.2 +
+                      2.0 * Eigen::MatrixXd::Identity(n, n);
+  auto Cop = [&](const Vector<double> &v) { return Vector<double>(C * v); };
+  Vector<double> xb = Vector<double>::Zero(n);
+  auto r_bicg = pk::bicgstab<double>(Cop, b, xb);
+  if (!r_bicg.converged || r_bicg.relres > 1e-8)
+    fail("bicgstab asymmetric");
+  Vector<double> xg = Vector<double>::Zero(n);
+  auto r_gm = pk::gmres<double>(Cop, b, xg);
+  if (!r_gm.converged || r_gm.relres > 1e-8)
+    fail("gmres asymmetric");
+  std::cout << "asymmetric: bicgstab iters=" << r_bicg.iterations
+            << " gmres iters=" << r_gm.iterations << std::endl;
+
+  std::cout << "krylov selfcheck: PASS" << std::endl;
+  return 0;
+}
+
+// 用注入的 PCG+jacobi 跑 van der Pol，比对 LU 与 Krylov 两配置的末端状态
+static void ode_injection_demo() {
+  State<Scalar> y0(2);
+  y0 << 2.0, 0.0;
+  Scalar t0 = 0.0, t1 = 2.0, h0 = 0.001;
+
+  // 配置 A：默认 PartialPivLU
+  SemiImplicitEulerSolver<Scalar> lu_solver;
+  std::vector<Scalar> t_lu;
+  std::vector<State<Scalar>> y_lu;
+  lu_solver.solve(van_der_pol_rhs, t0, t1, y0, h0, t_lu, y_lu);
+
+  // 配置 B：注入 PCG + jacobi 预条件（用户文档示例写法）
+  SemiImplicitEulerSolver<Scalar> krylov_solver;
+  krylov_solver.__linear_solve =
+      [&](auto A, const auto &J, const State<Scalar> &rhs) {
+        auto M = pk::jacobi<Scalar>(State<Scalar>(J.diagonal()));
+        pk::Params<Scalar> p;
+        p.rtol = 1e-8;
+        p.max_iter = 300;
+        auto x = rhs;
+        x.setZero();
+        auto r = pk::pcg(A, rhs, x, M, p);
+        return r.converged ? x : State<Scalar>(); // 失败 → 空向量
+      };
+  std::vector<Scalar> t_kr;
+  std::vector<State<Scalar>> y_kr;
+  krylov_solver.solve(van_der_pol_rhs, t0, t1, y0, h0, t_kr, y_kr);
+
+  if (y_lu.size() != y_kr.size() || y_lu.empty()) {
+    std::cerr << "ode injection: FAIL (step count mismatch)" << std::endl;
+    std::exit(1);
+  }
+  Scalar maxdiff = 0;
+  for (size_t i = 0; i < y_lu.size(); ++i) {
+    const int nn = std::min(y_lu[i].size(), y_kr[i].size());
+    for (int j = 0; j < nn; ++j)
+      maxdiff = std::max(maxdiff, std::abs(y_lu[i](j) - y_kr[i](j)));
+  }
+  std::cout << "ode injection: states=" << y_lu.size()
+            << " max|LU-Krylov|=" << maxdiff << std::endl;
+  if (maxdiff > 1e-6) {
+    std::cerr << "ode injection: FAIL (maxdiff > 1e-6)" << std::endl;
+    std::exit(1);
+  }
+}
 
 int main(){
+    krylov_selfcheck();
+    ode_injection_demo();
+
     
 
     // 初始条件

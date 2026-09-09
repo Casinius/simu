@@ -1,16 +1,16 @@
 [
 {
-  "directory": "/home/cyan/Documents/simu",
+  "directory": "/home/cyan/simu_test",
   "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu/linux/x86_64/release/src/main.cpp.o", "src/main.cpp"],
   "file": "src/main.cpp"
 },
 {
-  "directory": "/home/cyan/Documents/simu",
+  "directory": "/home/cyan/simu_test",
   "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu/linux/x86_64/release/src/pcg.cxx.o", "src/pcg.cxx"],
   "file": "src/pcg.cxx"
 },
 {
-  "directory": "/home/cyan/Documents/simu",
+  "directory": "/home/cyan/simu_test",
   "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O3", "-std=c++26", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-fsanitize=address", "-DNDEBUG", "-o", "build/.objs/simu/linux/x86_64/release/src/solve.cxx.o", "src/solve.cxx"],
   "file": "src/solve.cxx"
 }]
