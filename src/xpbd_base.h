@@ -41,8 +41,6 @@ template <class Scalar> struct PhysicsData {
   std::vector<Scalar> inv_mass;
 };
 
-template <typename Data, class Scalar>
-void integrate(Data &data, Scalar dt, const Eigen::Vector3<Scalar> &force);
 
 template <class Data, class Scalar> struct ISolver {
   virtual void solve(Data &data, Scalar dt) = 0;
@@ -58,41 +56,26 @@ template <typename Scalar> using Mat3 = Eigen::Matrix<Scalar, 3, 3>;
 
 template <typename Scalar> using Mat2 = Eigen::Matrix<Scalar, 2, 2>;
 
-// ---------- 积分器（Verlet 或 Velocity-Verlet） ----------
-template <typename Scalar>
-void integrate_verlet(PhysicsData<Scalar> &data, const Vec3<Scalar> &force,
-                      Scalar dt) {
-  const Scalar dt2 = dt * dt;
-  for (size_t i = 0; i < data.num_particles(); ++i) {
-    if (data.invMass[i] == 0)
-      continue;
-    Vec3<Scalar> new_x = data.x[i] + (data.x[i] - data.x_prev[i]) + force * dt2;
-    data.x_prev[i] = data.x[i];
-    data.x[i] = new_x;
-    // 速度可以后续再更新，或者不维护
-  }
-}
-
+// ---------- 积分器（半隐式欧拉 / velocity-Verlet 预测步） ----------
 template <typename Scalar>
 void integrate_velocity_verlet(PhysicsData<Scalar> &data,
                                const Vec3<Scalar> &force, Scalar dt) {
-  // 半隐式欧拉（与 velocity-Verlet 类似）
-  for (size_t i = 0; i < data.num_particles(); ++i) {
-    if (data.invMass[i] == 0)
+  for (size_t i = 0; i < data.pos.size(); ++i) {
+    if (data.inv_mass[i] == 0)
       continue;
-    data.v[i] += force * dt;
-    data.x[i] += data.v[i] * dt;
+    data.velocity[i] += force * dt;
+    data.pos[i] += data.velocity[i] * dt;
   }
 }
 
 // 后处理：用位置修正更新速度
 template <typename Scalar>
 void update_velocities(PhysicsData<Scalar> &data, Scalar dt) {
-  for (size_t i = 0; i < data.num_particles(); ++i) {
-    if (data.invMass[i] == 0)
+  for (size_t i = 0; i < data.pos.size(); ++i) {
+    if (data.inv_mass[i] == 0)
       continue;
-    data.v[i] = (data.x[i] - data.x_prev[i]) / dt;
-    data.x_prev[i] = data.x[i];
+    data.velocity[i] = (data.pos[i] - data.pos_prev[i]) / dt;
+    data.pos_prev[i] = data.pos[i];
   }
 }
 
