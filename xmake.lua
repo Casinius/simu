@@ -2,6 +2,14 @@ add_rules("mode.debug", "mode.release")
 add_rules("plugin.compile_commands.autoupdate", {outputdir = "."})
 set_languages("c++latest")
 
+-- 覆盖率构建：xmake f --coverage=y -m dbg && xmake build test && xmake run test
+-- 之后用 gcovr 出报告：gcovr -r . --filter src/ --txt coverage.txt --html-details coverage.html
+option("coverage")
+    set_default(false)
+    set_showmenu(true)
+    set_description("enable gcov coverage instrumentation")
+option_end()
+
 set_policy("build.sanitizer.address", true)
 add_requires("eigen 5.0.1","taocpp-json 2025.03.11","autodiff")
 --add_requires("boost",{config = {cmake = false}})
@@ -10,6 +18,17 @@ target("simu")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
     add_packages("eigen","taocpp-json","autodiff")
+
+target("test")
+    set_kind("binary")
+    add_includedirs("src")
+    add_files("src/test/*.cpp")
+    add_packages("eigen","taocpp-json","autodiff")
+    add_tests("fpxpbd", {runenv = "TEST_VERBOSE"})
+    if has_config("coverage") then
+        add_cxflags("--coverage", {force = true})
+        add_ldflags("--coverage", {force = true})
+    end
 
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
