@@ -1,26 +1,26 @@
 [
 {
   "directory": "/home/cyan/simu_test",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-std=c++26", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/simu/linux/x86_64/dbg/src/main.cpp.o", "src/main.cpp"],
-  "file": "src/main.cpp"
-},
-{
-  "directory": "/home/cyan/simu_test",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-std=c++26", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/simu/linux/x86_64/dbg/src/solve.cxx.o", "src/solve.cxx"],
-  "file": "src/solve.cxx"
-},
-{
-  "directory": "/home/cyan/simu_test",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "--coverage", "-o", "build/.objs/test/linux/x86_64/dbg/src/test/test_derivatives.cpp.o", "src/test/test_derivatives.cpp"],
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O0", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/test/linux/x86_64/debug/src/test/test_derivatives.cpp.o", "src/test/test_derivatives.cpp"],
   "file": "src/test/test_derivatives.cpp"
 },
 {
   "directory": "/home/cyan/simu_test",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "--coverage", "-o", "build/.objs/test/linux/x86_64/dbg/src/test/test_smoke.cpp.o", "src/test/test_smoke.cpp"],
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O0", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/test/linux/x86_64/debug/src/test/test_smoke.cpp.o", "src/test/test_smoke.cpp"],
   "file": "src/test/test_smoke.cpp"
 },
 {
   "directory": "/home/cyan/simu_test",
-  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "--coverage", "-o", "build/.objs/test/linux/x86_64/dbg/src/test/test_main.cpp.o", "src/test/test_main.cpp"],
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O0", "-std=c++26", "-Isrc", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/test/linux/x86_64/debug/src/test/test_main.cpp.o", "src/test/test_main.cpp"],
   "file": "src/test/test_main.cpp"
+},
+{
+  "directory": "/home/cyan/simu_test",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O0", "-std=c++26", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/simu/linux/x86_64/debug/src/main.cpp.o", "src/main.cpp"],
+  "file": "src/main.cpp"
+},
+{
+  "directory": "/home/cyan/simu_test",
+  "arguments": ["/usr/bin/g++", "-c", "-m64", "-g", "-O0", "-std=c++26", "-I", "/home/cyan/.xmake/packages/t/taocpp-json/2025.03.11/168d7d6c29ba46228898927bdc7aae97/include", "-I", "/home/cyan/.xmake/packages/p/pegtl/54a2e32b/725e51fe81b74141ade9efbd3ccaf900/include", "-I", "/home/cyan/.xmake/packages/a/autodiff/v1.1.2/220936f5207f4b94b3427f9ffe92170a/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include", "-I", "/home/cyan/.xmake/packages/e/eigen/5.0.1/ce9ac89e421f48e580f5be059582731d/include/eigen3", "-fsanitize=address", "-o", "build/.objs/simu/linux/x86_64/debug/src/solve.cxx.o", "src/solve.cxx"],
+  "file": "src/solve.cxx"
 }]
