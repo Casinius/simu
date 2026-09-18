@@ -1,37 +1,142 @@
-// ODESolver.cpp
+// ODESolver.cpp — 遗留 ODE 库的现代化实现。
+// 模板定义集中于本 TU，文件底部显式实例化 double 版本。
 #include "solve.h"
 
-// #include "solve_config.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <iostream>
-
+#include <optional>
 #include <print>
-#include <ratio>
 #include <stdexcept>
-#pragma once
+// taskflow v4.1: runtime.hpp/async.hpp 持有 executor 的部分 out-of-line 定义，
+// umbrella 头不含它们，须显式引入以满足符号。
+#include <taskflow/algorithm/for_each.hpp>
+#include <taskflow/core/async.hpp>
+#include <taskflow/core/runtime.hpp>
+#include <taskflow/taskflow.hpp>
+
+namespace rk45_const {
+
+// Fehlberg 4(5) Butcher 表：A 为 6x6 下三角（行 0 为空），c 为节点，
+// b4/b5 分别为 4 阶与 5 阶解的权重。
+inline constexpr std::array<std::array<double, 6>, 6> A = {{
+    {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+    {1.0 / 4.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+    {3.0 / 32.0, 9.0 / 32.0, 0.0, 0.0, 0.0, 0.0},
+    {1932.0 / 2197.0, -7200.0 / 2197.0, 7296.0 / 2197.0, 0.0, 0.0, 0.0},
+    {439.0 / 216.0, -8.0, 3680.0 / 513.0, -845.0 / 4104.0, 0.0, 0.0},
+    {-8.0 / 27.0, 2.0, -3544.0 / 2565.0, 1859.0 / 4104.0, -11.0 / 40.0, 0.0},
+}};
+inline constexpr std::array<double, 6> c = {
+    {0.0, 1.0 / 4.0, 3.0 / 8.0, 12.0 / 13.0, 1.0, 1.0 / 2.0}};
+inline constexpr std::array<double, 6> b4 = {
+    {25.0 / 216.0, 0.0, 1408.0 / 2565.0, 2197.0 / 4104.0, -1.0 / 5.0, 0.0}};
+inline constexpr std::array<double, 6> b5 = {
+    {16.0 / 135.0, 0.0, 6656.0 / 12825.0, 28561.0 / 56430.0, -9.0 / 50.0,
+     2.0 / 55.0}};
+
+} // namespace rk45_const
+
+namespace {
+
+// taskflow v4 的 for_each_index 挂在 FlowBuilder 上；包一层 Taskflow +
+// run().wait() 提供 Executor 级并行 for。
+template <class Fn>
+void parallel_for(tf::Executor &ex, int first, int last, int step, Fn &&fn) {
+  tf::Taskflow taskflow;
+  taskflow.for_each_index(first, last, step, std::forward<Fn>(fn));
+  ex.run(std::move(taskflow)).wait();
+}
+
+// 固定中心差分扰动（原固定步长变体使用 1e-8）。
+template <class Scalar>
+Scalar fixed_eps(const State<Scalar> &, int, Scalar) {
+  return Scalar(1e-8);
+}
+
+// 统一 Newton 迭代：中心差分数值雅可比 + PartialPivLU。
+//
+//   Residual: State<Scalar>(const State<Scalar>&)          残差 F(y)
+//   Eps:       Scalar(const State<Scalar>&, int, Scalar)   第 j 列扰动
+//
+// refresh_on_slow=false：每次迭代都重算雅可比（原固定 eps 变体）。
+// refresh_on_slow=true ：首次迭代重算，之后仅当残差下降过慢
+//                        （res_norm > 0.5*prev_res_norm）时重算——原 dyn
+//                        变体的惰性雅可比；prev_res_norm 是本次调用内的
+//                        局部状态（原成员的跨步残留本就无意义）。
+//
+// 并行契约：ex 非空且 n >= 64 时雅可比按列并行装配。各列写 J 的不相交列；
+// Residual/Eps 闭包必须只读捕获且可并发调用（右端 f 是 const 可调用对象，
+// 其内部不得携带跨线程可变状态），否则调用方传 ex=nullptr。
+template <class Scalar, class Residual, class Eps>
+std::optional<State<Scalar>> newton_solve(const State<Scalar> &y0,
+                                          int max_iter, Scalar tol,
+                                          Residual &&R, Eps &&eps,
+                                          bool refresh_on_slow,
+                                          tf::Executor *ex) {
+  using Mat = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+  const int n = y0.size();
+  State<Scalar> y = y0;
+  Eigen::PartialPivLU<Mat> lu;
+  bool jac_uptodate = false;
+  Scalar prev_res_norm = 0;
+  for (int iter = 0; iter < max_iter; ++iter) {
+    State<Scalar> F = R(y);
+    Scalar res_norm = F.norm();
+    if (res_norm < tol)
+      return y;
+    if (!refresh_on_slow || !jac_uptodate) {
+      Mat J(n, n);
+      auto assemble_column = [&](int j) {
+        Scalar e = eps(y, j, res_norm);
+        State<Scalar> yp = y, ym = y;
+        yp(j) += e;
+        ym(j) -= e;
+        J.col(j) = (R(yp) - R(ym)) / (Scalar(2) * e);
+      };
+      if (ex && n >= 64)
+        parallel_for(*ex, 0, n, 1, assemble_column);
+      else
+        for (int j = 0; j < n; ++j)
+          assemble_column(j);
+      lu.compute(J);
+      jac_uptodate = true;
+    }
+    State<Scalar> delta = lu.solve(-F);
+    if (delta.array().isNaN().any())
+      return std::nullopt; // 雅可比奇异
+    y += delta;
+    if (refresh_on_slow && iter > 0 && res_norm > Scalar(0.5) * prev_res_norm)
+      jac_uptodate = false; // 收敛过慢，下一轮重算雅可比
+    prev_res_norm = res_norm;
+  }
+  return std::nullopt; // 迭代耗尽未收敛
+}
+
+// 隐式 Euler 单步 Newton：F(y) = y - y_curr - h*f(t+h, y)。
+template <class Scalar, class Eps>
+std::optional<State<Scalar>> implicit_euler_newton(const RHSFunc<Scalar> &f,
+                                                   Scalar t, Scalar h,
+                                                   const State<Scalar> &y_curr,
+                                                   Scalar tol, int max_iter,
+                                                   Eps &&eps,
+                                                   bool refresh_on_slow,
+                                                   tf::Executor *ex) {
+  return newton_solve<Scalar>(
+      y_curr, max_iter, tol,
+      // 显式物化为 State：lambda 若返回 Eigen 表达式模板，其内部引用会指向
+      // 本 lambda 帧的临时对象，跨帧求值即悬挂（ASan stack-use-after-return）。
+      [&](const State<Scalar> &y) -> State<Scalar> {
+        return y - y_curr - h * f(t + h, y);
+      },
+      std::forward<Eps>(eps), refresh_on_slow, ex);
+}
+
+} // namespace
+
 // ======================================================================
 // RK45 实现
 // ======================================================================
-// Butcher 表系数 (Fehlberg 4(5))
-
-namespace rk45_const {
-const auto a21 = 1.0 / 4.0;
-const auto a31 = 3.0 / 32.0, a32 = 9.0 / 32.0;
-const auto a41 = 1932.0 / 2197.0, a42 = -7200.0 / 2197.0, a43 = 7296.0 / 2197.0;
-const auto a51 = 439.0 / 216.0, a52 = -8.0, a53 = 3680.0 / 513.0,
-           a54 = -845.0 / 4104.0;
-const auto a61 = -8.0 / 27.0, a62 = 2.0, a63 = -3544.0 / 2565.0,
-           a64 = 1859.0 / 4104.0, a65 = -11.0 / 40.0;
-
-const auto c2 = 1.0 / 4.0, c3 = 3.0 / 8.0, c4 = 12.0 / 13.0, c5 = 1.0,
-           c6 = 1.0 / 2.0;
-
-const auto b4_1 = 25.0 / 216.0, b4_3 = 1408.0 / 2565.0, b4_4 = 2197.0 / 4104.0,
-           b4_5 = -1.0 / 5.0;
-const auto b5_1 = 16.0 / 135.0, b5_3 = 6656.0 / 12825.0,
-           b5_4 = 28561.0 / 56430.0, b5_5 = -9.0 / 50.0, b5_6 = 2.0 / 55.0;
-} // namespace rk45_const
 template <class Scalar>
 RK45Solver<Scalar>::RK45Solver(Scalar atol, Scalar rtol, Scalar h_min,
                                Scalar h_max, Scalar safety, Scalar fac_min,
@@ -44,12 +149,9 @@ void RK45Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
                                const State<Scalar> &y0, Scalar h0,
                                std::vector<Scalar> &times,
                                std::vector<State<Scalar>> &states) {
-
   times.clear();
   states.clear();
 
-  // std::cout << "RK45: h_min_ = " << h_min_ << ", h_max_ = " << h_max_ <<
-  // std::endl;
   Scalar t = t0;
   State<Scalar> y = y0;
   Scalar h = std::min(h0, h_max_);
@@ -61,8 +163,8 @@ void RK45Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
     if (t + h > t1)
       h = t1 - t;
     if (h < h_min_) {
-      std::cerr << "RK45: step size below minimum! t = " << t << ", h = " << h
-                << std::endl;
+      std::print(stderr, "RK45: step size below minimum! t = {}, h = {}\n", t,
+                 h);
       break;
     }
 
@@ -91,27 +193,37 @@ void RK45Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   }
 }
 
-// 在 solve.cxx 中替换 RK45Solver::step 中的 error 计算部分
 template <class Scalar>
 typename RK45Solver<Scalar>::StepResult
 RK45Solver<Scalar>::step(const RHSFunc<Scalar> &f, Scalar t,
                          const State<Scalar> &y, Scalar h) {
-  using namespace rk45_const;
-  // ... 计算 k1..k6, y4, y5 相同 ...
-  State<Scalar> k1 = f(t, y);
-  State<Scalar> k2 = f(t + c2 * h, y + h * (a21 * k1));
-  State<Scalar> k3 = f(t + c3 * h, y + h * (a31 * k1 + a32 * k2));
-  State<Scalar> k4 = f(t + c4 * h, y + h * (a41 * k1 + a42 * k2 + a43 * k3));
-  State<Scalar> k5 =
-      f(t + c5 * h, y + h * (a51 * k1 + a52 * k2 + a53 * k3 + a54 * k4));
-  State<Scalar> k6 = f(t + c6 * h, y + h * (a61 * k1 + a62 * k2 + a63 * k3 +
-                                            a64 * k4 + a65 * k5));
+  using rk45_const::A;
+  using rk45_const::b4;
+  using rk45_const::b5;
+  using rk45_const::c;
 
-  State<Scalar> y4 =
-      y + h * (b4_1 * k1 + b4_3 * k3 + b4_4 * k4 + b4_5 * k5); // 4阶近似
-  State<Scalar> y5 = y + h * (b5_1 * k1 + b5_3 * k3 + b5_4 * k4 + b5_5 * k5 +
-                              b5_6 * k6); // 5阶近似
-  State<Scalar> error_vec = y5 - y4;      // 分量误差
+  // stage 循环：ks[i] = f(t + c[i]*h, y + h*Σ_{j<i} A[i][j]*ks[j])。
+  // 内积按 j 升序左折叠，与原手写 k1..k6 展开的浮点结合顺序逐项一致。
+  std::array<State<Scalar>, 6> ks;
+  ks[0] = f(t, y);
+  for (int i = 1; i < 6; ++i) {
+    State<Scalar> acc = Scalar(A[i][0]) * ks[0];
+    for (int j = 1; j < i; ++j)
+      acc += Scalar(A[i][j]) * ks[j];
+    ks[i] = f(t + Scalar(c[i]) * h, y + h * acc);
+  }
+
+  // y4/y5 = y + h*(b·ks)，求和顺序同理
+  State<Scalar> s4 = Scalar(b4[0]) * ks[0];
+  State<Scalar> s5 = Scalar(b5[0]) * ks[0];
+  for (int j = 1; j < 6; ++j) {
+    s4 += Scalar(b4[j]) * ks[j];
+    s5 += Scalar(b5[j]) * ks[j];
+  }
+  State<Scalar> y4 = y + h * s4;     // 4阶近似
+  State<Scalar> y5 = y + h * s5;     // 5阶近似
+  State<Scalar> error_vec = y5 - y4; // 分量误差
+
   // 计算混合误差范数（分量相对/绝对）
   Scalar err_norm = 0.0;
   for (int i = 0; i < y.size(); ++i) {
@@ -123,13 +235,12 @@ RK45Solver<Scalar>::step(const RHSFunc<Scalar> &f, Scalar t,
 }
 
 // ======================================================================
-// 标准固定步长BDF2 实现
+// 标准固定步长 BDF2 实现
 // ======================================================================
 template <class Scalar>
 BDF2Solver<Scalar>::BDF2Solver(Scalar newton_tol, int max_iter)
     : newton_tol_(newton_tol), max_iter_(max_iter) {}
 
-// 在 solve.cxx 中替换 BDF2Solver::solve 的第一步启动部分
 template <class Scalar>
 void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
                                const State<Scalar> &y0, Scalar h0,
@@ -139,8 +250,6 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   states.clear();
 
   // 第一步：使用隐式欧拉生成 y1（固定步长 h）
-  State<Scalar> y1 = y0;
-  // 步长限制
   Scalar h = std::min(h0, t1 - t0);
   if (h <= 0)
     return;
@@ -150,189 +259,87 @@ void BDF2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
   times.push_back(t);
   states.push_back(y);
 
-  const int n = y0.size();
-  const Scalar newton_tol = newton_tol_;
-  const int max_iter = max_iter_;
-  for (int iter = 0; iter < max_iter; ++iter) {
-    State<Scalar> res = y1 - (y0 + h * f(t + h, y1));
-    if (res.norm() < newton_tol)
-      break;
-    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-    Scalar eps = 1e-8;
-    for (int j = 0; j < n; ++j) {
-      State<Scalar> yp = y1, ym = y1;
-      yp(j) += eps;
-      ym(j) -= eps;
-      State<Scalar> rp = yp - (y0 + h * f(t + h, yp));
-      State<Scalar> rm = ym - (y0 + h * f(t + h, ym));
-      J.col(j) = (rp - rm) / (2 * eps);
-    }
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-        lu(J);
-    y1 += lu.solve(-res);
+  auto y1 = implicit_euler_newton(f, t, h, y0, newton_tol_, max_iter_,
+                                  fixed_eps<Scalar>, /*refresh_on_slow=*/false,
+                                  this->executor_);
+  if (!y1.has_value()) {
+    std::print(stderr,
+               "BDF2: implicit Euler startup did not converge at t={}\n",
+               t + h);
+    return;
   }
   Scalar t1_bdf = t + h;
   times.push_back(t1_bdf);
-  states.push_back(y1);
+  State<Scalar> y_n1 = std::move(*y1);
+  states.push_back(y_n1);
 
   // 后续 BDF2 步进
-  State<Scalar> y_n = y, y_n1 = y1;
+  State<Scalar> y_n = std::move(y);
   Scalar t_n = t, t_n1 = t1_bdf;
 
   while (t_n1 < t1 - 1e-12) {
     Scalar t_n2 = t_n1 + h;
     if (t_n2 > t1) {
-      // 最后一段，改用隐式欧拉完成（或减小步长）
+      // 最后一段，改用隐式欧拉完成
       h = t1 - t_n1;
       t_n2 = t1;
-      // 隐式欧拉单步
-      State<Scalar> y_n2 = y_n1;
-      for (int iter = 0; iter < max_iter; ++iter) {
-        State<Scalar> res = y_n2 - (y_n1 + h * f(t_n2, y_n2));
-        if (res.norm() < newton_tol)
-          break;
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-        Scalar eps = 1e-8;
-        for (int j = 0; j < n; ++j) {
-          State<Scalar> yp = y_n2, ym = y_n2;
-          yp(j) += eps;
-          ym(j) -= eps;
-          State<Scalar> rp = yp - (y_n1 + h * f(t_n2, yp));
-          State<Scalar> rm = ym - (y_n1 + h * f(t_n2, ym));
-          J.col(j) = (rp - rm) / (2 * eps);
-        }
-        Eigen::PartialPivLU<
-            Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-            lu(J);
-        y_n2 += lu.solve(-res);
+      auto y_n2 = implicit_euler_newton(f, t_n1, h, y_n1, newton_tol_,
+                                        max_iter_, fixed_eps<Scalar>,
+                                        /*refresh_on_slow=*/false, this->executor_);
+      if (!y_n2.has_value()) {
+        std::print(stderr,
+                   "BDF2: implicit Euler tail did not converge at t={}\n",
+                   t_n2);
+        break;
       }
       times.push_back(t_n2);
-      states.push_back(y_n2);
+      states.push_back(std::move(*y_n2));
       break;
     } else {
       // 标准 BDF2 步
-      State<Scalar> y_n2 = dyn_eps_bdf2_step(f, t_n, y_n, t_n1, y_n1, h);
-      if (y_n2.size() == 0)
+      auto y_n2 =
+          bdf2_step(f, t_n, y_n, t_n1, y_n1, h, /*refresh_on_slow=*/true);
+      if (!y_n2.has_value())
         break;
       times.push_back(t_n2);
-      states.push_back(y_n2);
-      y_n = y_n1;
-      y_n1 = y_n2;
+      y_n = std::move(y_n1);
+      y_n1 = std::move(*y_n2);
+      states.push_back(y_n1);
       t_n = t_n1;
       t_n1 = t_n2;
     }
   }
 }
-// not reuse , correct impl
 
+// 单步 BDF2 Newton：F(y) = y - (4/3 y_{n+1} - 1/3 y_n + 2/3 h f(t_{n+2}, y))。
 template <class Scalar>
-State<Scalar>
-BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
+std::optional<State<Scalar>>
+BDF2Solver<Scalar>::bdf2_step(const RHSFunc<Scalar> &f, Scalar /*t_n*/,
                               const State<Scalar> &y_n, Scalar t_n1,
-                              const State<Scalar> &y_n1, Scalar h) {
-  Scalar t_n2 = t_n1 + h;
-  int n = y_n.size();
-  State<Scalar> y = y_n1; // 初始猜测
-
-  // 牛顿迭代求解隐式方程:
-  // F(y) = y - [ 4/3 y_{n+1} - 1/3 y_n + 2/3 h f(t_{n+2}, y) ] = 0
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    State<Scalar> F =
-        y - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n + (2.0 / 3.0) * h * f(t_n2, y));
-
-    if (F.norm() < newton_tol_) {
-      return y; // 收敛
-    }
-
-    // 数值 Jacobian: J(i,j) = dF_i / dy_j
-    Eigen::MatrixXd J = Eigen::MatrixXd::Zero(n, n);
-    Scalar eps = 1e-8;
-    for (int j = 0; j < n; ++j) {
-      State<Scalar> y_plus = y;
-      y_plus(j) += eps;
-      State<Scalar> y_minus = y;
-      y_minus(j) -= eps;
-
-      State<Scalar> F_plus = y_plus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
-                                       (2.0 / 3.0) * h * f(t_n2, y_plus));
-      State<Scalar> F_minus = y_minus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
-                                         (2.0 / 3.0) * h * f(t_n2, y_minus));
-      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-    }
-
-    // 求解线性系统 J * delta = -F
-    Eigen::PartialPivLU<Eigen::MatrixXd> lu(J);
-    State<Scalar> delta = lu.solve(-F);
-    y += delta;
-  }
-
-  std::cerr << "BDF2: Newton iteration did not converge at t = " << t_n2
-            << std::endl;
-  return State<Scalar>(); // 返回空向量表示失败
-}
-
-// 带复用和残差收敛慢hint的
-// ，但是在少量数据下由于要复制性能不如自动向量化重新计算;
-template <class Scalar>
-State<Scalar>
-BDF2Solver<Scalar>::dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
-                                      const State<Scalar> &y_n, Scalar t_n1,
-                                      const State<Scalar> &y_n1, Scalar h) {
-  Scalar t_n2 = t_n1 + h;
-  int n = y_n.size();
-  State<Scalar> y = y_n1; // 初始猜测
-  State<Scalar> F, delta;
-  Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>> lu;
-  bool jac_uptodate = false;
-
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    F = y - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n + (2.0 / 3.0) * h * f(t_n2, y));
-    Scalar res_norm = F.norm();
-    if (res_norm < newton_tol_) {
-      return y;
-    }
-
-    // 仅在第一次迭代或雅可比需要更新时计算
-    if (!jac_uptodate) {
-      Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-      for (int j = 0; j < n; ++j) {
-        Scalar eps = this->__eps_policy(y, j, res_norm);
-        State<Scalar> y_plus = y, y_minus = y;
-        y_plus(j) += eps;
-        y_minus(j) -= eps;
-        State<Scalar> F_plus = y_plus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
-                                         (2.0 / 3.0) * h * f(t_n2, y_plus));
-        State<Scalar> F_minus = y_minus - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
-                                           (2.0 / 3.0) * h * f(t_n2, y_minus));
-        J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-      }
-      lu.compute(J);
-      jac_uptodate = true;
-    }
-
-    delta = lu.solve(-F);
-    if (delta.array().isNaN().any()) {
-      std::cerr << "BDF2: singular Jacobian at t=" << t_n2 << std::endl;
-      return State<Scalar>();
-    }
-    y += delta;
-
-    // 可选：检测收敛速度，若残差下降过慢则标记雅可比需更新
-    if (iter > 0 && res_norm > 0.5 * prev_res_norm) {
-      jac_uptodate = false; // 下次迭代重新计算雅可比
-    }
-    prev_res_norm = res_norm;
-  }
-  std::cerr << "BDF2: Newton did not converge at t=" << t_n2 << std::endl;
-  return State<Scalar>();
+                              const State<Scalar> &y_n1, Scalar h,
+                              bool refresh_on_slow) {
+  const Scalar t_n2 = t_n1 + h;
+  auto result = newton_solve<Scalar>(
+      y_n1, max_iter_, newton_tol_,
+      [&](const State<Scalar> &y) -> State<Scalar> {
+        return y - (4.0 / 3.0 * y_n1 - 1.0 / 3.0 * y_n +
+                    (2.0 / 3.0) * h * f(t_n2, y));
+      },
+      [this, refresh_on_slow](const State<Scalar> &yy, int j, Scalar rn) {
+        return refresh_on_slow ? this->eps_policy_(yy, j, rn) : Scalar(1e-8);
+      },
+      refresh_on_slow, this->executor_);
+  if (!result.has_value())
+    std::print(stderr, "BDF2: Newton did not converge at t={}\n", t_n2);
+  return result;
 }
 
 // ======================================================================
-// IRK2 实现 (二阶隐式 Runge‑Kutta)
+// IRK2 实现 (二阶隐式 Runge‑Kutta，隐式中点)
 // ======================================================================
 template <typename Scalar>
-IRK2Solver<Scalar>::IRK2Solver(Method method, Scalar newton_tol, int max_iter)
-    : method_(method), newton_tol_(newton_tol), max_iter_(max_iter) {}
+IRK2Solver<Scalar>::IRK2Solver(Scalar newton_tol, int max_iter)
+    : newton_tol_(newton_tol), max_iter_(max_iter) {}
 
 template <typename Scalar>
 void IRK2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
@@ -351,129 +358,50 @@ void IRK2Solver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
     if (t + h > t1)
       h = t1 - t;
 
-    auto result = step(f, t, y, h);
-    if (result.y_next.size() == 0) {
+    auto y_next = step(f, t, y, h);
+    if (!y_next.has_value()) {
       // 失败：尝试减半步长
       h *= 0.5;
       if (h < 1e-15) {
-        std::cerr << "IRK2Solver: step size too small, aborting at t=" << t
-                  << std::endl;
+        std::print(stderr, "IRK2Solver: step size too small, aborting at t={}\n",
+                   t);
         break;
       }
-      std::cerr << "IRK2Solver: step failed, retrying with h=" << h
-                << std::endl;
+      std::print(stderr, "IRK2Solver: step failed, retrying with h={}\n", h);
       continue;
     }
 
     t += h;
-    y = std::move(result.y_next);
+    y = std::move(*y_next);
     times.push_back(t);
     states.push_back(y);
   }
 }
 
+// 单步隐式中点：F(y_next) = y_next - (y + h f(t + h/2, (y + y_next)/2))。
 template <typename Scalar>
-typename IRK2Solver<Scalar>::StepResult
+std::optional<State<Scalar>>
 IRK2Solver<Scalar>::step(const RHSFunc<Scalar> &f, Scalar t,
                          const State<Scalar> &y, Scalar h) {
-  if (y.size() == 0 || !f) {
-    return {State<Scalar>(), 0, h};
-  }
+  if (y.size() == 0 || !f)
+    return std::nullopt;
 
-  const int n = y.size();
-  const Scalar c = 0.5, a = 0.5;
+  const Scalar t_mid = t + 0.5 * h;
 
-  /*
-
-  // 使用零阶预测器（初值取当前状态），避免显式欧拉产生过大估计
-  State<Scalar> y_next = y;
-  State<Scalar> delta(n), residual(n);
-  Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-
-const Scalar eps = Scalar(1e-8);   // 固定绝对扰动，适应跨尺度
-
-
-  */
-
-  State<Scalar> y_next = y + h * f(t, y); // 显式 Euler 预测（比零阶好）
-  State<Scalar> delta(n), residual(n);
-  Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    Scalar t_mid = t + 0.5 * h;
-    State<Scalar> y_mid = 0.5 * (y + y_next);
-    residual = y_next - (y + h * f(t_mid, y_mid));
-
-    if (residual.norm() < newton_tol_) {
-      return {std::move(y_next), 0, h};
-    }
-
-    // === 关键修改：用策略计算 eps ===
-    for (int j = 0; j < n; ++j) {
-      Scalar eps = this->__eps_policy(y_next, j, residual.norm());
-
-      State<Scalar> y_plus = y_next, y_minus = y_next;
-      y_plus(j) += eps;
-      y_minus(j) -= eps;
-
-      State<Scalar> y_mid_plus = 0.5 * (y + y_plus);
-      State<Scalar> y_mid_minus = 0.5 * (y + y_minus);
-      State<Scalar> res_plus = y_plus - (y + h * f(t_mid, y_mid_plus));
-      State<Scalar> res_minus = y_minus - (y + h * f(t_mid, y_mid_minus));
-      J.col(j) = (res_plus - res_minus) / (2 * eps);
-    }
-    Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-        lu(J);
-    delta = lu.solve(-residual);
-    if (delta.array().isNaN().any()) {
-      std::cerr << "IRK2: singular Jacobian at t=" << t << ", iter=" << iter
-                << std::endl;
-      return {State<Scalar>(), 0, h};
-    }
-    y_next += delta;
-  }
-
-  /*
-
-   for (int iter = 0; iter < max_iter_; ++iter) {
-      Scalar t_mid = t + c * h;
-      State<Scalar> y_mid = (1 - a) * y + a * y_next;
-      residual = y_next - (y + h * f(t_mid, y_mid));
-
-      if (residual.norm() < newton_tol_) {
-        return {std::move(y_next), 0, h};
-      }
-
-      // 数值雅可比：固定绝对扰动
-      for (int j = 0; j < n; ++j) {
-        State<Scalar> y_plus = y_next, y_minus = y_next;
-        y_plus(j) += eps;
-        y_minus(j) -= eps;
-
-        State<Scalar> y_mid_plus = (1 - a) * y + a * y_plus;
-        State<Scalar> y_mid_minus = (1 - a) * y + a * y_minus;
-        State<Scalar> res_plus = y_plus - (y + h * f(t_mid, y_mid_plus));
-        State<Scalar> res_minus = y_minus - (y + h * f(t_mid, y_mid_minus));
-        J.col(j) = (res_plus - res_minus) / (2 * eps);
-      }
-
-      Eigen::PartialPivLU<Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>>
-          lu(J);
-      delta = lu.solve(-residual);
-      if (delta.array().isNaN().any()) {
-        std::cerr << "IRK2: singular Jacobian at t=" << t << ", iter=" << iter
-                  << std::endl;
-        return {State<Scalar>(), 0, h};
-      }
-      y_next += delta;
-    }
-
-
-  */
-
-  std::cerr << "IRK2: Startup iteration did not converge at t=" << t
-            << std::endl;
-  return {State<Scalar>(), 0, h};
+  State<Scalar> y_next = y + h * f(t, y); // 显式 Euler 预测
+  auto result = newton_solve<Scalar>(
+      y_next, max_iter_, newton_tol_,
+      [&](const State<Scalar> &yn) -> State<Scalar> {
+        State<Scalar> y_mid = Scalar(0.5) * (y + yn);
+        return yn - (y + h * f(t_mid, y_mid));
+      },
+      [this](const State<Scalar> &yy, int j, Scalar rn) {
+        return this->eps_policy_(yy, j, rn);
+      },
+      /*refresh_on_slow=*/false, this->executor_);
+  if (!result.has_value())
+    std::print(stderr, "IRK2: Newton did not converge at t={}\n", t);
+  return result;
 }
 
 // ======================================================================
@@ -493,104 +421,51 @@ void SemiImplicitEulerSolver<Scalar>::solve(
 
   Scalar t = t0;
   State<Scalar> y = y0;
-  Scalar h = h0; // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+  Scalar h = h0; // 固定步长
   times.push_back(t);
   states.push_back(y);
 
   while (t < t1) {
     if (t + h > t1)
       h = t1 - t;
-    State<Scalar> y_next = implicit_euler_dynstep(f, t, h, y);
-    if (y_next.size() == 0) {
+    auto y_next = implicit_euler_step(f, t, h, y, /*refresh_on_slow=*/true);
+    if (!y_next.has_value()) {
       h *= 0.5;        // 减半步长
       if (h < 1e-12) { // 防止死循环
-        std::cerr << "Step size too small, aborting.\n";
+        std::print(stderr, "Step size too small, aborting.\n");
         break;
       }
       continue; // 重新尝试当前步
     }
     t += h;
-    y = std::move(y_next);
+    y = std::move(*y_next);
     times.push_back(t);
     states.push_back(y);
   }
 }
 
 template <class Scalar>
-State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_step(
-    const RHSFunc<Scalar> &f, Scalar t, Scalar h, const State<Scalar> &y_curr) {
-  int n = y_curr.size();
-  State<Scalar> y = y_curr; // 初始猜测
-
-  // 隐式方程: y = y_curr + h * f(t+h, y)
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    State<Scalar> F = y - y_curr - h * f(t + h, y);
-    if (F.norm() < newton_tol_) {
-      return y;
-    }
-
-    // 数值 Jacobian
-    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-    Scalar eps = 1e-8;
-    for (int j = 0; j < n; ++j) {
-      State<Scalar> y_plus = y, y_minus = y;
-      y_plus(j) += eps;
-      y_minus(j) -= eps;
-      State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
-      State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
-      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-    }
-
-    Eigen::PartialPivLU<decltype(J)> lu(J);
-    State<Scalar> delta = lu.solve(-F);
-    y += delta;
-  }
-
-  std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = "
-            << t + h << std::endl;
-  return State<Scalar>(); // 失败返回空向量
+std::optional<State<Scalar>>
+SemiImplicitEulerSolver<Scalar>::implicit_euler_step(
+    const RHSFunc<Scalar> &f, Scalar t, Scalar h, const State<Scalar> &y_curr,
+    bool refresh_on_slow) {
+  auto result = implicit_euler_newton(
+      f, t, h, y_curr, newton_tol_, max_iter_,
+      [this, refresh_on_slow](const State<Scalar> &yy, int j, Scalar rn) {
+        return refresh_on_slow ? this->eps_policy_(yy, j, rn) : Scalar(1e-8);
+      },
+      refresh_on_slow, this->executor_);
+  if (!result.has_value())
+    std::print(
+        stderr,
+        "SemiImplicitEuler: Newton iteration did not converge at t = {}\n",
+        t + h);
+  return result;
 }
 
-template <class Scalar>
-State<Scalar> SemiImplicitEulerSolver<Scalar>::implicit_euler_dynstep(
-    const RHSFunc<Scalar> &f, Scalar t, Scalar h, const State<Scalar> &y_curr) {
-  int n = y_curr.size();
-  State<Scalar> y = y_curr; // 初始猜测
-
-  // 隐式方程: y = y_curr + h * f(t+h, y)
-  for (int iter = 0; iter < max_iter_; ++iter) {
-    State<Scalar> F = y - y_curr - h * f(t + h, y);
-    if (F.norm() < newton_tol_) {
-      return y;
-    }
-
-    // 数值 Jacobian
-    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> J(n, n);
-
-    for (int j = 0; j < n; ++j) {
-      Scalar eps = this->__eps_policy(y, j, F.norm());
-      State<Scalar> y_plus = y, y_minus = y;
-      y_plus(j) += eps;
-      y_minus(j) -= eps;
-      State<Scalar> F_plus = y_plus - y_curr - h * f(t + h, y_plus);
-      State<Scalar> F_minus = y_minus - y_curr - h * f(t + h, y_minus);
-      J.col(j) = (F_plus - F_minus) / (2.0 * eps);
-    }
-
-    Eigen::PartialPivLU<decltype(J)> lu(J);
-    State<Scalar> delta = lu.solve(-F);
-    y += delta;
-  }
-
-  std::cerr << "SemiImplicitEuler: Newton iteration did not converge at t = "
-            << t + h << std::endl;
-  return State<Scalar>(); // 失败返回空向量
-}
-
-template <class Scalar>
-VerletSolver<Scalar>::VerletSolver(Scalar newton_tol, int max_iter)
-    : newton_tol_(newton_tol), max_iter_(max_iter) {}
-
+// ======================================================================
+// Verlet 实现
+// ======================================================================
 template <class Scalar>
 void VerletSolver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
                                  const State<Scalar> &y0, Scalar h0,
@@ -601,7 +476,7 @@ void VerletSolver<Scalar>::solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
 
   Scalar t = t0;
   State<Scalar> y = y0;
-  Scalar h = h0; // 固定步长（简单起见，也可以接受自适应，但这里仅演示固定步长）
+  Scalar h = h0; // 固定步长
   times.push_back(t);
   states.push_back(y);
 
@@ -623,9 +498,8 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
   if (y_curr.size() % 2 != 0) {
     throw std::invalid_argument("State size must be even for Verlet");
   }
-  // y_curr 应包含 [位置, 速度]（对于二维系统，y[0]=x, y[1]=v）
-  // 此处假设 y_curr 是 2N 维向量，前半部分为位置，后半部分为速度
-  int n = y_curr.size() / 2; // 质点数量（如果是单质点，n=1）
+  // y_curr 应包含 [位置, 速度]：前半部分为位置，后半部分为速度
+  int n = y_curr.size() / 2;
 
   State<Scalar> y_new(y_curr.size());
 
@@ -634,14 +508,13 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
   State<Scalar> v = y_curr.tail(n); // 当前速度
 
   // 2. 计算当前加速度 a(t) = f(t, y_curr) 的后半部分（速度导数）
-  //    注意：f 返回整个导数向量 [dx/dt, dv/dt]，我们只需要 dv/dt
   State<Scalar> f_curr = f(t, y_curr);
   State<Scalar> a_curr = f_curr.tail(n); // 加速度
 
   // 3. 更新位置（显式，使用当前加速度）
   State<Scalar> x_new = x + v * h + 0.5 * a_curr * h * h;
 
-  // 4. 构造新状态用于计算新加速度（位置已更新，速度使用半步更新的方法）
+  // 4. 构造新状态用于计算新加速度（位置已更新，速度使用半步更新）
   State<Scalar> y_mid(y_curr.size());
   y_mid.head(n) = x_new;
 
@@ -652,7 +525,7 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
   State<Scalar> f_new = f(t + h, y_mid);
   State<Scalar> a_new = f_new.tail(n);
 
-  // 5. 更新速度（使用基于半步更新的速度 计算 平均加速度）
+  // 5. 更新速度（使用基于半步更新的速度计算平均加速度）
   State<Scalar> v_new = v_half + 0.5 * a_new * h;
 
   // 6. 组装新状态
@@ -661,3 +534,13 @@ State<Scalar> VerletSolver<Scalar>::verlet_step(const RHSFunc<Scalar> &f,
 
   return y_new;
 }
+
+// ======================================================================
+// 显式实例化（自原 unity-hack 配置头迁移，修复其死链接）
+// ======================================================================
+using ODEScalar = double;
+template class RK45Solver<ODEScalar>;
+template class BDF2Solver<ODEScalar>;
+template class IRK2Solver<ODEScalar>;
+template class SemiImplicitEulerSolver<ODEScalar>;
+template class VerletSolver<ODEScalar>;

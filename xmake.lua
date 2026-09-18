@@ -10,20 +10,28 @@ option("coverage")
     set_description("enable gcov coverage instrumentation")
 option_end()
 
-set_policy("build.sanitizer.address", true)
-add_requires("eigen 5.0.1","taocpp-json 2025.03.11","autodiff")
+option("asan")
+    set_default(true)
+    set_showmenu(true)
+    set_description("enable AddressSanitizer instrumentation")
+option_end()
+
+if has_config("asan") then
+    set_policy("build.sanitizer.address", true)
+end
+add_requires("eigen 5.0.1","range-v3 0.12.0","taskflow v4.1.0")
 --add_requires("boost",{config = {cmake = false}})
 target("simu")
     set_kind("binary")
     add_files("src/*.cpp")
     add_files("src/*.cxx")
-    add_packages("eigen","taocpp-json","autodiff")
+    add_packages("eigen","range-v3","taskflow")
 
 target("test")
     set_kind("binary")
     add_includedirs("src")
     add_files("src/test/*.cpp")
-    add_packages("eigen","taocpp-json","autodiff")
+    add_packages("eigen","range-v3","taskflow")
     add_tests("fpxpbd", {runenv = "TEST_VERBOSE"})
     if has_config("coverage") then
         add_cxflags("--coverage", {force = true})

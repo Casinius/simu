@@ -9,9 +9,11 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <format>
 #include <functional>
 #include <print>
 #include <random>
+#include <source_location>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,33 +34,34 @@ inline bool verbose_enabled() {
   return enabled;
 }
 
+// 统一失败上报：计数 + 打印（宏体单行转发到这里）
+inline void fail(std::source_location loc, std::string &&msg) {
+  ++failure_count();
+  std::print("  FAIL [{}:{}] {}\n", loc.file_name(), loc.line(), msg);
+}
+
 #define CHECK(cond)                                                            \
   do {                                                                         \
-    if (!(cond)) {                                                             \
-      ++xtest::failure_count();                                                \
-      std::print("  FAIL [{}:{}] CHECK({})\n", __FILE__, __LINE__, #cond);     \
-    }                                                                          \
+    if (!(cond))                                                               \
+      xtest::fail(std::source_location::current(), std::format("CHECK({})", #cond)); \
   } while (0)
 
 #define CHECK_NEAR(got, want, tol)                                             \
   do {                                                                         \
     double g = static_cast<double>(got);                                       \
     double w = static_cast<double>(want);                                      \
-    if (!(std::abs(g - w) <= (tol))) {                                         \
-      ++xtest::failure_count();                                                \
-      std::print("  FAIL [{}:{}] CHECK_NEAR({}) got = {:.6e}, want = {:.6e}, "\
-                 "tol = {:.3e}\n",                                             \
-                 __FILE__, __LINE__, #got, g, w, static_cast<double>(tol));    \
-    }                                                                          \
+    if (!(std::abs(g - w) <= (tol)))                                           \
+      xtest::fail(std::source_location::current(),                              \
+                  std::format("CHECK_NEAR({}) got = {:.6e}, want = {:.6e}, "   \
+                              "tol = {:.3e}",                                   \
+                              #got, g, w, static_cast<double>(tol)));           \
   } while (0)
 
 #define CHECK_MSG(cond, ...)                                                   \
   do {                                                                         \
-    if (!(cond)) {                                                             \
-      ++xtest::failure_count();                                                \
-      std::print("  FAIL [{}:{}] {}\n", __FILE__, __LINE__,                    \
-                 std::format(__VA_ARGS__));                                    \
-    }                                                                          \
+    if (!(cond))                                                               \
+      xtest::fail(std::source_location::current(),                             \
+                  std::format(__VA_ARGS__));                                   \
   } while (0)
 
 // ---- 套件注册 ----

@@ -5,7 +5,9 @@
 #include <Eigen/Dense>
 #include <Eigen/LU>
 #include <functional>
+#include <optional>
 #include <vector>
+#include <taskflow/core/executor.hpp>
 /**
  * 抽象求解器基类
  * 所有具体求解器必须实现 solve() 方法
@@ -100,8 +102,11 @@ template <typename Scalar> class ODESolver {
 
     public:
   // 状态向量类型
-EpsPolicy<Scalar> __eps_policy= eps_policy::relative<Scalar>();
+EpsPolicy<Scalar> eps_policy_ = eps_policy::relative<Scalar>();
   virtual ~ODESolver() = default;
+
+  // 可选并行后端：非空时雅可比装配等可并行阶段走 executor
+  void set_executor(tf::Executor* e) { executor_ = e; }
 
   /**
    * 求解初值问题
@@ -118,6 +123,9 @@ EpsPolicy<Scalar> __eps_policy= eps_policy::relative<Scalar>();
                      std::vector<Scalar> &times,
                      std::vector<State<Scalar>> &states) = 0;
 
+protected:
+  tf::Executor* executor_ = nullptr;
+
 };
 
 // ----------------------------------------------------------------------
@@ -131,7 +139,7 @@ public:
 
   void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
              const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
-             std::vector<State<Scalar>> &states);
+             std::vector<State<Scalar>> &states) override;
 
 private:
   // 单步积分，返回误差估计和推荐的下一时间步长
@@ -160,46 +168,30 @@ public:
              std::vector<State<Scalar>> &states) override;
 
 private:
-  // 单步 BDF2：已知 y_{n}, y_{n+1} 和步长 h，求 y_{n+2}
-  State<Scalar> bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
+  // 单步 BDF2：已知 y_{n}, y_{n+1} 和步长 h，求 y_{n+2}。
+  // refresh_on_slow=true 时雅可比惰性更新（原 dyn 变体），否则每轮重算。
+  std::optional<State<Scalar>> bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
                           const State<Scalar> &y_n, Scalar t_n1,
-                          const State<Scalar> &y_n1, Scalar h);
-  State<Scalar> dyn_eps_bdf2_step(const RHSFunc<Scalar> &f, Scalar t_n,
-                          const State<Scalar> &y_n, Scalar t_n1,
-                          const State<Scalar> &y_n1, Scalar h);
-
+                          const State<Scalar> &y_n1, Scalar h,
+                          bool refresh_on_slow);
 
   Scalar newton_tol_;
   int max_iter_;
-  Scalar prev_res_norm;
 };
 
 template <typename Scalar> class IRK2Solver : public ODESolver<Scalar> {
 public:
-  // Method 选择: Midpoint (隐式中点) 或 Trapezoidal (梯形)
-  // 在 solve.h 中修改 IRK2Solver 的 Method 枚举
-  enum class Method {
-    Midpoint
-  }; // 移除 Trapezoidal，因为它需要双级 IRK，当前实现错误
-  // enum class Method { Midpoint, Trapezoidal };
-
-  explicit IRK2Solver(Method method = Method::Midpoint,
-                      Scalar newton_tol = 1e-10, int max_iter = 30);
+  explicit IRK2Solver(Scalar newton_tol = 1e-10, int max_iter = 30);
 
   void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
              const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
              std::vector<State<Scalar>> &states) override;
 
 private:
-  struct StepResult {
-    State<Scalar> y_next;
-    Scalar error; // 未使用，保留占位
-    Scalar h_next;
-  };
-  StepResult step(const RHSFunc<Scalar> &f, Scalar t, const State<Scalar> &y,
-                  Scalar h);
+  // 单步积分；nullopt 表示失败（不收敛或雅可比奇异）
+  std::optional<State<Scalar>> step(const RHSFunc<Scalar> &f, Scalar t,
+                                    const State<Scalar> &y, Scalar h);
 
-  Method method_;
   Scalar newton_tol_;
   int max_iter_;
 };
@@ -218,10 +210,11 @@ public:
              std::vector<State<Scalar>> &states) override;
 
 private:
-  State<Scalar> implicit_euler_step(const RHSFunc<Scalar> &f, Scalar t,
-                                    Scalar h, const State<Scalar> &y_curr);
-  State<Scalar> implicit_euler_dynstep(const RHSFunc<Scalar> &f, Scalar t,
-                                    Scalar h, const State<Scalar> &y_curr);                                  
+  // 隐式欧拉单步。refresh_on_slow=true 时雅可比惰性更新（原 dyn 变体）。
+  std::optional<State<Scalar>> implicit_euler_step(const RHSFunc<Scalar> &f,
+                                    Scalar t, Scalar h,
+                                    const State<Scalar> &y_curr,
+                                    bool refresh_on_slow);
   Scalar newton_tol_;
   int max_iter_;
 };
@@ -229,7 +222,7 @@ private:
 
 template<typename Scalar> class VerletSolver : public ODESolver<Scalar>{
     public:
-      explicit VerletSolver(Scalar newton_tol = 1e-10, int max_iter = 30);
+      VerletSolver() = default;
 
       void solve(const RHSFunc<Scalar> &f, Scalar t0, Scalar t1,
                  const State<Scalar> &y0, Scalar h0, std::vector<Scalar> &times,
@@ -237,8 +230,6 @@ template<typename Scalar> class VerletSolver : public ODESolver<Scalar>{
       private:
       State<Scalar> verlet_step(const RHSFunc<Scalar> &f, Scalar t,
                                         Scalar h, const State<Scalar> &y_curr);
-      Scalar newton_tol_;
-      int max_iter_;
 };
 
 

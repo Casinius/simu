@@ -11,9 +11,15 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <ranges>
+#include <span>
 #include <type_traits>
 #include <vector>
+#include <taskflow/core/executor.hpp>
+#include <taskflow/algorithm/for_each.hpp>
+#include <taskflow/core/runtime.hpp>
+#include <taskflow/core/async.hpp>
 
 namespace xpbd {
 
@@ -44,6 +50,44 @@ template <std::size_t Verts, std::ranges::input_range R>
   std::array<std::size_t, Verts> out{};
   std::ranges::copy(cell, out.begin());
   return out;
+}
+
+// 贪心 first-fit 图着色：共享顶点的 cell 不同色。
+// 返回 [color] -> cell 下标序列（cell 按输入顺序进入其色类）。
+// 复杂度 O(cells^2 * Verts)，仅构造期调用；测试可直接调用。
+template <std::size_t Verts>
+[[nodiscard]] std::vector<std::vector<std::uint32_t>>
+greedy_color_cells(const std::vector<std::array<std::size_t, Verts>> &cells) {
+  std::vector<std::vector<std::uint32_t>> classes;
+  std::vector<std::uint32_t> color_of(cells.size());
+  std::vector<bool> color_used;
+  for (std::size_t ci = 0; ci < cells.size(); ++ci) {
+    std::fill(color_used.begin(), color_used.end(), false);
+    for (std::size_t cj = 0; cj < ci; ++cj)
+      if (std::ranges::any_of(cells[ci], [&](std::size_t v) {
+            return std::ranges::find(cells[cj], v) != cells[cj].end();
+          }))
+        color_used[color_of[cj]] = true;
+    std::uint32_t color = 0;
+    while (color < color_used.size() && color_used[color])
+      ++color;
+    if (color >= classes.size()) {
+      classes.emplace_back();
+      color_used.resize(color + 1, false);
+    }
+    color_of[ci] = color;
+    classes[color].push_back(std::uint32_t(ci));
+  }
+  return classes;
+}
+
+// taskflow v4 的 for_each_index 挂在 FlowBuilder 上；包一层 Taskflow +
+// run().wait() 提供 Executor 级并行 for。
+template <class Fn>
+void parallel_for(tf::Executor &ex, int first, int last, int step, Fn &&fn) {
+  tf::Taskflow taskflow;
+  taskflow.for_each_index(first, last, step, std::forward<Fn>(fn));
+  ex.run(std::move(taskflow)).wait();
 }
 
 // ========== 数据结构：四面体 / 三角形 FEM 单元 ==========
@@ -446,27 +490,55 @@ public:
 
   FPSolver(std::vector<UnitData> &units, int max_iterations = 10,
            Scalar over_relaxation = Scalar(1),
-           Vec3<Scalar> gravity = Vec3<Scalar>::Zero())
+           Vec3<Scalar> gravity = Vec3<Scalar>::Zero(),
+           tf::Executor *executor = nullptr)
       : units_(units), max_iterations_(max_iterations),
-        over_relaxation_(over_relaxation), gravity_(std::move(gravity)) {}
+        over_relaxation_(over_relaxation), gravity_(std::move(gravity)),
+        executor_(executor) {
+    // 一次性固化网格拓扑：cell 顶点索引、邻接图着色、位移缓存槽位。
+    // 着色并行时同 unit 同色 cell 顶点互不相交，可安全并发。
+    for (auto &unit : units_) {
+      auto cells = unit.indices | std::views::chunk(Verts) |
+                   std::ranges::to<std::vector>();
+      auto cell_table = cells | std::views::transform([](const auto &cell) {
+                          return cell_indices<Verts>(cell);
+                        }) | std::ranges::to<std::vector>();
+      color_classes_.push_back(greedy_color_cells(cell_table));
+      cell_verts_.push_back(std::move(cell_table));
+      auto &slots = d_.emplace_back();
+      slots.resize(cells.size());
+    }
+  }
 
   void solve(PhysicsData<Scalar> &data, Scalar dt) override {
     // 1. 预测：备份 pos_prev（速度恢复基准），半隐式欧拉 + 重力
     data.pos_prev = data.pos;
-    integrate_velocity_verlet(data, gravity_, dt);
+    integrate_semi_implicit_euler(data, gravity_, dt);
 
-    // 2. 每单元位移缓存清零
-    d_.assign(units_.size(), {});
-    for (auto &&[u, unit] : std::views::enumerate(units_))
-      d_[u].assign(unit.indices.size() / Verts, Dvec::Zero());
+    // 2. 每单元位移缓存纯清零（构造时已分配，不逐步 assign）
+    for (auto &unit_slots : d_)
+      for (auto &slot : unit_slots)
+        slot.setZero();
 
-    // 3. GPBD 迭代：逐单元 Gauss-Seidel
+    // 3. GPBD 迭代：逐单元 Gauss-Seidel；executor_ 非空时同色 cell 并发
+    //    （改变 Gauss-Seidel 访问次序：结果与串行小容差一致，非位级相同）
     for (int iter = 0; iter < max_iterations_; ++iter)
-      for (auto &&[u, unit] : std::views::enumerate(units_))
-        for (auto &&[c, cell] : unit.indices | std::views::chunk(Verts) |
-                                    std::views::enumerate)
-          process_unit(data, unit, c,
-                       cell_indices<Verts>(cell), d_[u][c], dt);
+      for (auto &&[u, unit] : std::views::enumerate(units_)) {
+        if (executor_ == nullptr) {
+          for (auto &&[c, cell] : unit.indices | std::views::chunk(Verts) |
+                                      std::views::enumerate)
+            process_unit(data, unit, c, cell_indices<Verts>(cell), d_[u][c],
+                         dt);
+        } else {
+          for (auto &color_class : color_classes_[u])
+            parallel_for(*executor_, 0, int(color_class.size()), 1,
+                         [&](int i) {
+                           std::size_t c = color_class[i];
+                           process_unit(data, unit, c, cell_verts_[u][c],
+                                        d_[u][c], dt);
+                         });
+        }
+      }
 
     // 4. 速度恢复
     update_velocities(data, dt);
@@ -531,11 +603,10 @@ private:
     std::array<Vec, Verts> q = pos;
     for (int j : std::views::iota(0, Dim))
       q[j + 1] = pos[0] + Ds2.col(j);
-    Vec c0 = Vec::Zero(), cq = Vec::Zero();
-    for (const auto &p : pos)
-      c0 += p;
-    for (const auto &p : q)
-      cq += p;
+    // Eigen 加法返回表达式模板，fold_left 需要物化回 Vec
+    const auto sum_vecs = [](Vec acc, const Vec &p) -> Vec { return acc + p; };
+    const Vec c0 = std::ranges::fold_left(pos, Vec(Vec::Zero()), sum_vecs);
+    const Vec cq = std::ranges::fold_left(q, Vec(Vec::Zero()), sum_vecs);
     const Vec shift = (c0 - cq) / Scalar(Verts);
     for (auto [p, q_i] : std::views::zip(pos, q))
       p = q_i + shift;
@@ -632,11 +703,12 @@ private:
     StrainVec grad;
     StrainMat H;
     Scalar f = eval_f(Dl, &grad, &H);
+    Eigen::SelfAdjointEigenSolver<StrainMat> es; // 循环外构造，免每步分配
     for (int it = 0; it < 8; ++it) {
       if (grad.norm() < Scalar(1e-10))
         break;
       // 正定化：SelfAdjointEigenSolver 特征值下限截断
-      Eigen::SelfAdjointEigenSolver<StrainMat> es(H);
+      es.compute(H);
       Scalar mean_abs = es.eigenvalues().cwiseAbs().mean();
       Scalar floor_e = std::max(Scalar(1e-8) * mean_abs, Scalar(1e-12));
       StrainVec ev = es.eigenvalues().cwiseMax(floor_e);
@@ -679,7 +751,10 @@ private:
   int max_iterations_;
   Scalar over_relaxation_;
   Vec3<Scalar> gravity_;
-  std::vector<std::vector<Dvec>> d_;
+  tf::Executor *executor_ = nullptr;                          // 并行后端（可选）
+  std::vector<std::vector<std::array<std::size_t, Verts>>> cell_verts_; // [unit][cell]
+  std::vector<std::vector<std::vector<std::uint32_t>>> color_classes_;  // [unit][color] -> cell
+  std::vector<std::vector<Dvec>> d_;                          // 构造时分配，solve 只清零
 };
 
 } // namespace FP_XPBD
